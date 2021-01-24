@@ -21,8 +21,11 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 import collections
-import itertools
 import ipaddress
+import itertools
+from typing import Union
+
+import capirca.utils.iputils as iputils
 
 
 def IP(ip, comment='', token='', strict=True):
@@ -40,11 +43,16 @@ def IP(ip, comment='', token='', strict=True):
   Raises:
     ValueError: if the string passed isn't either a v4 or a v6 address.
   """
-  imprecise_ip = ipaddress.ip_network(ip, strict=strict)
+  if isinstance(ip, ipaddress._BaseNetwork):  # pylint disable=protected-access
+    imprecise_ip = ip
+  else:
+    imprecise_ip = ipaddress.ip_network(ip, strict=strict)
   if imprecise_ip.version == 4:
     return IPv4(ip, comment, token, strict=strict)
   elif imprecise_ip.version == 6:
     return IPv6(ip, comment, token, strict=strict)
+  raise ValueError('Provided IP string "%s" is not a valid v4 or v6 address'
+                   % ip)
 
 
 # TODO(robankeny) remove once at 3.7
@@ -52,7 +60,7 @@ def IP(ip, comment='', token='', strict=True):
 def _is_subnet_of(a, b):  # pylint: disable=invalid-name
   try:
     # Always false if one is v4 and the other is v6.
-    if a._version != b._version:  # pylint: disable=protected-access
+    if a.version != b.version:
       raise TypeError('%s and %s are not of the same version' % (a, b))
     return (b.network_address <= a.network_address and
             b.broadcast_address >= a.broadcast_address)
@@ -68,7 +76,14 @@ class IPv4(ipaddress.IPv4Network):
     self.text = comment
     self.token = token
     self.parent_token = token
-    super(IPv4, self).__init__(ip_string, strict)
+
+    # Using a tuple of IP integer/prefixlength is significantly faster than
+    # using the BaseNetwork object for recreating the IP network
+    if isinstance(ip_string, ipaddress._BaseNetwork):  # pylint disable=protected-access
+      ip = (ip_string.network_address._ip, ip_string.prefixlen)  # pylint disable=protected-access # pytype: disable=attribute-error
+    else:
+      ip = ip_string
+    super(IPv4, self).__init__(ip, strict)
 
   def subnet_of(self, other):
     """Return True if this network is a subnet of other."""
@@ -83,7 +98,7 @@ class IPv4(ipaddress.IPv4Network):
     return self._is_subnet_of(other, self)
 
   def __deepcopy__(self, memo):
-    result = self.__class__(self.with_prefixlen)
+    result = self.__class__(self)
     result.text = self.text
     result.token = self.token
     result.parent_token = self.parent_token
@@ -140,7 +155,14 @@ class IPv6(ipaddress.IPv6Network):
     self.text = comment
     self.token = token
     self.parent_token = token
-    super(IPv6, self).__init__(ip_string, strict)
+
+    # Using a tuple of IP integer/prefixlength is significantly faster than
+    # using the BaseNetwork object for recreating the IP network
+    if isinstance(ip_string, ipaddress._BaseNetwork):  # pylint disable=protected-access
+      ip = (ip_string.network_address._ip, ip_string.prefixlen)  # pylint disable=protected-access # pytype: disable=attribute-error
+    else:
+      ip = ip_string
+    super(IPv6, self).__init__(ip, strict)
 
   def subnet_of(self, other):
     """Return True if this network is a subnet of other."""
@@ -155,7 +177,7 @@ class IPv6(ipaddress.IPv6Network):
     return self._is_subnet_of(other, self)
 
   def __deepcopy__(self, memo):
-    result = self.__class__(self.with_prefixlen)
+    result = self.__class__(self)
     result.text = self.text
     result.token = self.token
     result.parent_token = self.parent_token
@@ -202,6 +224,9 @@ class IPv6(ipaddress.IPv6Network):
         self.text += ', ' + comment
     else:
       self.text = comment
+
+
+IPType = Union[IPv4, IPv6]
 
 
 def _InNetList(adders, ip):
@@ -317,8 +342,12 @@ def _CollapseAddrListInternal(addresses, complements_by_network):
         prev_addr.AddComment(addr.text)
       elif (prev_addr.version == addr.version and
             prev_addr.prefixlen == addr.prefixlen and
-            prev_addr.broadcast_address + 1 == addr.network_address and
-            prev_addr.Supernet().network_address == prev_addr.network_address):
+            # It's faster to compare integers than IP objects
+            prev_addr.broadcast_address._ip + 1 == addr.network_address._ip and  # pylint disable=protected-access
+            # Generating Supernet is relatively intensive compared to doing bit
+            # operations
+            (prev_addr.netmask._ip << 1) & prev_addr.network_address._ip ==      # pylint disable=protected-access
+            prev_addr.network_address._ip):                                      # pylint disable=protected-access
         # Preserve addr's comment, then merge with it.
         prev_addr.AddComment(addr.text)
         addr = ret_array.pop().Supernet()
@@ -386,7 +415,7 @@ def RemoveAddressFromList(superset, exclude):
     elif exclude.version == addr.version and exclude.subnet_of(addr):
       # this could be optimized except that one group uses this
       # code with ipaddrs (instead of nacaddrs).
-      ret_array.extend([IP(x) for x in addr.address_exclude(exclude)])
+      ret_array.extend(IP(x) for x in iputils.exclude_address(addr, exclude))
     else:
       ret_array.append(addr)
   return sorted(ret_array)

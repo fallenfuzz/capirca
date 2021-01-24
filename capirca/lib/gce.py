@@ -27,13 +27,16 @@ from __future__ import unicode_literals
 
 import copy
 import datetime
+import ipaddress
 import json
 import logging
 import re
 
+from typing import Dict, Text, Any
+
 from capirca.lib import aclgenerator
 from capirca.lib import nacaddr
-import ipaddress
+import six
 from six.moves import range
 
 
@@ -43,6 +46,10 @@ class Error(Exception):
 
 class GceFirewallError(Error):
   """Raised with problems in formatting for GCE firewall."""
+
+
+class ExceededAttributeCountError(Error):
+  """Raised when the total attribute count of a policy is above the maximum."""
 
 
 def IsDefaultDeny(term):
@@ -101,6 +108,10 @@ class Term(aclgenerator.Term):
       raise GceFirewallError(
           'GCE firewall does not support address exclusions without a source '
           'address list.')
+    # The reason for the error below isn't because of a GCE restriction, but
+    # because we don't want to use a bad default of GCE that allows talking
+    # to anything when there's no source address, source tag, or source service
+    # account.
     if (not self.term.source_address and
         not self.term.source_tag) and self.term.direction == 'INGRESS':
       raise GceFirewallError(
@@ -116,6 +127,9 @@ class Term(aclgenerator.Term):
         raise GceFirewallError(
             'GCE firewall rule no longer contains any source addresses after '
             'the prefixes in source_address_exclude were removed.')
+      # Similarly to the comment above, the reason for this error is also
+      # because we do not want to use the bad default of GCE that allows for
+      # talking to anything when there is no IP address provided for this field.
       if not self.term.destination_address and self.term.direction == 'EGRESS':
         raise GceFirewallError(
             'GCE firewall rule no longer contains any destination addresses '
@@ -123,7 +137,8 @@ class Term(aclgenerator.Term):
 
   def __str__(self):
     """Convert term to a string."""
-    json.dumps(self.ConvertToDict(), indent=2, separators=(',', ': '))
+    json.dumps(self.ConvertToDict(), indent=2,
+               separators=(six.ensure_str(','), six.ensure_str(': ')))
 
   def _validateDirection(self):
     if self.term.direction == 'INGRESS':
@@ -212,9 +227,13 @@ class Term(aclgenerator.Term):
           else:
             ports.append('%d-%d' % (start, end))
       action = self.ACTION_MAP[self.term.action[0]]
-      if action not in proto_dict:
-        proto_dict[action] = []
-      proto_dict[self.ACTION_MAP[self.term.action[0]]].append(dest)
+      dict_val = []
+      if action in proto_dict:
+        dict_val = proto_dict[action]
+        if not isinstance(dict_val, list):
+          dict_val = [dict_val]
+      dict_val.append(dest)
+      proto_dict[action] = dict_val
 
     # There's a limit of 256 addresses each term can contain.
     # If we're above that limit, we're breaking it down in more terms.
@@ -290,6 +309,9 @@ class GCE(aclgenerator.ACLGenerator):
 
   def _TranslatePolicy(self, pol, exp_info):
     self.gce_policies = []
+    max_attribute_count = 0
+    total_attribute_count = 0
+    total_rule_count = 0
 
     current_date = datetime.datetime.utcnow().date()
     exp_info_date = current_date + datetime.timedelta(weeks=exp_info)
@@ -309,10 +331,20 @@ class GCE(aclgenerator.ACLGenerator):
             direction = i
             filter_options.remove(i)
 
+      for opt in filter_options:
+        try:
+          max_attribute_count = int(opt)
+          logging.info(
+              'Checking policy for max attribute count %d', max_attribute_count)
+          filter_options.remove(opt)
+          break
+        except ValueError:
+          continue
+
       if filter_options:
         network = filter_options[0]
       else:
-        logging.warn('GCE filter does not specify a network.')
+        logging.warning('GCE filter does not specify a network.')
 
       term_names = set()
       if IsDefaultDeny(terms[-1]):
@@ -329,13 +361,15 @@ class GCE(aclgenerator.ACLGenerator):
 
       for term in terms:
         if term.stateless_reply:
-          logging.warn('WARNING: Term %s in policy %s is a stateless reply '
-                       'term and will not be rendered.',
-                       term.name, filter_name)
+          logging.warning('WARNING: Term %s in policy %s is a stateless reply '
+                          'term and will not be rendered.',
+                          term.name, filter_name)
           continue
         term.network = network
         if not term.comment:
           term.comment = header.comment
+        if direction == 'EGRESS':
+          term.name += '-e'
         term.name = self.FixTermLength(term.name)
         if term.name in term_names:
           raise GceFirewallError('Duplicate term name')
@@ -347,14 +381,29 @@ class GCE(aclgenerator.ACLGenerator):
             logging.info('INFO: Term %s in policy %s expires '
                          'in less than two weeks.', term.name, filter_name)
           if term.expiration <= current_date:
-            logging.warn('WARNING: Term %s in policy %s is expired and '
-                         'will not be rendered.', term.name, filter_name)
+            logging.warning('WARNING: Term %s in policy %s is expired and '
+                            'will not be rendered.', term.name, filter_name)
             continue
         if term.option:
           raise GceFirewallError(
               'GCE firewall does not support term options.')
 
+        for tmp_term in Term(term).ConvertToDict():
+          logging.debug('Attribute count of rule %s is: %d', term.name,
+                        GetAttributeCount(tmp_term))
+          total_attribute_count += GetAttributeCount(tmp_term)
+          total_rule_count += 1
+          if max_attribute_count and total_attribute_count > max_attribute_count:
+            # Stop processing rules as soon as the attribute count is over the
+            # limit.
+            raise ExceededAttributeCountError(
+                'Attribute count (%d) for %s exceeded the maximum (%d)' % (
+                    total_attribute_count, filter_name, max_attribute_count))
         self.gce_policies.append(Term(term))
+    logging.info('Total rule count of policy %s is: %d', filter_name,
+                 total_rule_count)
+    logging.info('Total attribute count of policy %s is: %d', filter_name,
+                 total_attribute_count)
 
   def __str__(self):
     target = []
@@ -362,7 +411,46 @@ class GCE(aclgenerator.ACLGenerator):
     for term in self.gce_policies:
       target.extend(term.ConvertToDict())
 
-    out = '%s\n\n' % (
-        json.dumps(target, indent=2, separators=(',', ': '), sort_keys=True))
+    out = '%s\n\n' % (json.dumps(target, indent=2,
+                                 separators=(six.ensure_str(','),
+                                             six.ensure_str(': ')),
+                                 sort_keys=True))
 
     return out
+
+
+def GetAttributeCount(dict_term: Dict[Text, Any]) -> int:
+  """Calculate the attribute count of a term in its dictionary form.
+
+  The attribute count of a rule is the sum of the number of ports, protocols, IP
+  ranges, tags and target service account.
+
+  Note: The goal of this function is not to determine if a term is valid, but
+      to calculate its attribute count regardless of correctness.
+
+  Args:
+    dict_term: A dict object.
+
+  Returns:
+    int: The attribute count of the term.
+  """
+  addresses = (len(dict_term.get('destinationRanges', []))
+               or len(dict_term.get('sourceRanges', [])))
+
+  proto_ports = 0
+  for allowed in dict_term.get('allowed', []):
+    proto_ports += len(allowed.get('ports', [])) + 1  # 1 for ipProtocol
+  for denied in dict_term.get('denied', []):
+    proto_ports += len(denied.get('ports', [])) + 1  # 1 for ipProtocol
+
+  tags = 0
+  for _ in dict_term.get('sourceTags', []):
+    tags += 1
+  for _ in dict_term.get('targetTags', []):
+    tags += 1
+
+  service_accounts = 0
+  for _ in dict_term.get('targetServiceAccount', []):
+    service_accounts += 1
+
+  return addresses + proto_ports + tags + service_accounts

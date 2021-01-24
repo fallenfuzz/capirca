@@ -34,8 +34,8 @@ from __future__ import unicode_literals
 
 import datetime
 
-from capirca.lib import aclgenerator
 from absl import logging
+from capirca.lib import aclgenerator
 
 
 class Error(Exception):
@@ -46,7 +46,7 @@ class UnsupportedActionError(Error):
   """Raised when we see an unsupported action."""
 
 
-class UnsupportedTargetOption(Error):
+class UnsupportedTargetOptionError(Error):
   """Raised when we see an unsupported option."""
 
 
@@ -168,18 +168,16 @@ class Term(aclgenerator.Term):
     # icmp-type
     icmp_types = ['']
     if self.term.icmp_type:
-      if self.af != 'mixed':
-        af = self.af
-      elif self.term.protocol == ['icmp']:
+      if self.term.protocol == ['icmp']:
         af = 'inet'
-      elif self.term.protocol == ['icmp6']:
+      elif self.term.protocol == ['icmpv6']:
         af = 'inet6'
       else:
-        raise aclgenerator.UnsupportedFilterError('%s %s %s' % (
-            '\n', self.term.name,
-            'icmp protocol is not defined or not supported.'))
-      icmp_types = self.NormalizeIcmpTypes(
-          self.term.icmp_type, self.term.protocol, af)
+        raise aclgenerator.UnsupportedFilterError(
+            '%s %s %s' % ('\n', self.term.name,
+                          'icmp protocol is not defined or not supported.'))
+      icmp_types = self.NormalizeIcmpTypes(self.term.icmp_type,
+                                           self.term.protocol, af)
 
       if 'icmp' in self.term.protocol:
         conditions.append(self._GenerateIcmpType(icmp_types,
@@ -333,6 +331,11 @@ class PcapFilter(aclgenerator.ACLGenerator):
     Takes standard ACLGenerator arguments, as well as an 'invert' kwarg.  If
     this argument is true, the pcap filter will be reversed, such that it
     matches all those packets that would be denied by the specified policy.
+
+    Args:
+      *args: Arguments.
+      **kwargs: Keyword arguments.
+
     """
     self._invert = False
     if 'invert' in kwargs:
@@ -389,7 +392,7 @@ class PcapFilter(aclgenerator.ACLGenerator):
       # ensure all options after the filter name are expected
       for opt in filter_options:
         if opt not in good_afs + good_options:
-          raise UnsupportedTargetOption('%s %s %s %s' % (
+          raise UnsupportedTargetOptionError('%s %s %s %s' % (
               '\nUnsupported option found in', self._PLATFORM,
               'target definition:', opt))
 
@@ -424,8 +427,8 @@ class PcapFilter(aclgenerator.ACLGenerator):
             logging.info('INFO: Term %s in policy %s expires '
                          'in less than two weeks.', term.name, filter_name)
           if term.expiration <= current_date:
-            logging.warn('WARNING: Term %s in policy %s is expired and '
-                         'will not be rendered.', term.name, filter_name)
+            logging.warning('WARNING: Term %s in policy %s is expired and '
+                            'will not be rendered.', term.name, filter_name)
             continue
 
         if not term:

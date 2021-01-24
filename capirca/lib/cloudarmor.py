@@ -12,11 +12,12 @@ from __future__ import unicode_literals
 
 
 import copy
-import datetime
 import json
 import logging
 
 from capirca.lib import aclgenerator
+
+import six
 
 
 # Generic error class
@@ -79,13 +80,12 @@ class Term(aclgenerator.Term):
       raw_comment = ' '.join(self.term.comment)
       if len(raw_comment) > self._MAX_TERM_COMMENT_LENGTH:
         term_dict['description'] = raw_comment[:self._MAX_TERM_COMMENT_LENGTH]
-        logging.warn('Term comment exceeds maximum length = %d; Truncating '
-                     'comment..', self._MAX_TERM_COMMENT_LENGTH)
+        logging.warning('Term comment exceeds maximum length = %d; Truncating '
+                        'comment..', self._MAX_TERM_COMMENT_LENGTH)
       else:
         term_dict['description'] = raw_comment
 
     term_dict['action'] = self.ACTION_MAP[self.term.action[0]]
-    term_dict['match'] = {'versionedExpr': 'SRC_IPS_V1', 'config': {}}
     term_dict['preview'] = False
 
     if self.address_family == 'inet':
@@ -99,27 +99,42 @@ class Term(aclgenerator.Term):
       raise UnsupportedFilterTypeError("'%s' is not a valid filter type" %
                                        self.address_family)
 
-    term_dict['match']['config']['srcIpRanges'] = saddrs
-
+    term_dict['match'] = {
+        'versionedExpr': 'SRC_IPS_V1',
+        'config': {
+            'srcIpRanges': saddrs,
+        }
+    }
     # If scrIpRanges within a single term exceed _MAX_IP_RANGES_PER_TERM,
     # split into multiple terms
     source_addr_chunks = [
         saddrs[x:x+self._MAX_IP_RANGES_PER_TERM] for x in range(
             0, len(saddrs), self._MAX_IP_RANGES_PER_TERM)]
 
-    split_rule_count = len(source_addr_chunks)
-
-    for i, chunk in enumerate(source_addr_chunks):
+    if not source_addr_chunks:
       rule = copy.deepcopy(term_dict)
-      if split_rule_count > 1:
-        term_position_suffix = ' [%d/%d]' % (i+1, split_rule_count)
-        desc_limit = self._MAX_TERM_COMMENT_LENGTH - len(term_position_suffix)
-        rule['description'] = (rule.get('description', '')[:desc_limit]
-                               + term_position_suffix)
-
-      rule['priority'] = priority_index + i
-      rule['match']['config']['srcIpRanges'] = [str(saddr) for saddr in chunk]
+      rule['priority'] = priority_index
+      rule['match']['config']['srcIpRanges'] = ['*']
       rules.append(rule)
+
+    else:
+      split_rule_count = len(source_addr_chunks)
+      for i, chunk in enumerate(source_addr_chunks):
+        rule = copy.deepcopy(term_dict)
+        if split_rule_count > 1:
+          term_position_suffix = ' [%d/%d]' % (i+1, split_rule_count)
+          desc_limit = self._MAX_TERM_COMMENT_LENGTH - len(term_position_suffix)
+          rule['description'] = (rule.get('description', '')[:desc_limit]
+                                 + term_position_suffix)
+
+        rule['priority'] = priority_index + i
+        rule['match'] = {
+            'versionedExpr': 'SRC_IPS_V1',
+            'config': {
+                'srcIpRanges': [str(saddr) for saddr in chunk],
+            }
+        }
+        rules.append(rule)
 
     # TODO(robankeny@): Review this log entry to make it cleaner/more useful.
     # Right now, it prints the entire term which might be huge
@@ -127,7 +142,6 @@ class Term(aclgenerator.Term):
       logging.debug('Current term [%s] was split into %d sub-terms since '
                     '_MAX_IP_RANGES_PER_TERM was exceeded',
                     str(term_dict), len(source_addr_chunks))
-
     return rules
 
 
@@ -236,13 +250,15 @@ class CloudArmor(aclgenerator.ACLGenerator):
                                         ' a single policy | MAX = %d'
                                         % self._MAX_RULES_PER_POLICY)
           else:
-            logging.warn('Current rule count (%d) is almost at maximum limit '
-                         ' of %d', total_rule_count, self._MAX_RULES_PER_POLICY)
+            logging.warning('Current rule count (%d) is almost at maximum '
+                            'limit of %d', total_rule_count,
+                            self._MAX_RULES_PER_POLICY)
 
   def __str__(self):
     """Return the JSON blob for CloudArmor."""
 
     out = '%s\n\n' % (
-        json.dumps(self.cloudarmor_policies, indent=2, separators=(',', ': '),
+        json.dumps(self.cloudarmor_policies, indent=2,
+                   separators=(six.ensure_str(','), six.ensure_str(': ')),
                    sort_keys=True))
     return out

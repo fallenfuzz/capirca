@@ -23,9 +23,11 @@ from __future__ import unicode_literals
 import collections
 import copy
 import datetime
+from typing import cast
 
-from capirca.lib import aclgenerator
 from absl import logging
+from capirca.lib import aclgenerator
+from capirca.lib import nacaddr
 
 
 class Error(Exception):
@@ -184,9 +186,7 @@ class Term(aclgenerator.Term):
     # icmp-type
     icmp_types = ['']
     if self.term.icmp_type:
-      if self.af != 'mixed':
-        af = self.af
-      elif protocol == ['icmp']:
+      if protocol == ['icmp']:
         af = 'inet'
       elif protocol == ['icmpv6']:
         af = 'inet6'
@@ -194,8 +194,7 @@ class Term(aclgenerator.Term):
         raise aclgenerator.UnsupportedFilterError('%s %s %s' % (
             '\n', self.term.name,
             'icmp protocol is not defined or not supported.'))
-      icmp_types = self.NormalizeIcmpTypes(
-          self.term.icmp_type, protocol, af)
+      icmp_types = self.NormalizeIcmpTypes(self.term.icmp_type, protocol, af)
 
     # options
     tcp_flags_set = []
@@ -316,6 +315,12 @@ class Term(aclgenerator.Term):
       if type_strs:
         line.append('icmp-type { %s }' % type_strs)
 
+    if 'icmpv6' in proto and icmp_types:
+      type_strs = [str(icmp_type) for icmp_type in icmp_types]
+      type_strs = ', '.join(type_strs)
+      if type_strs:
+        line.append('icmp6-type { %s }' % type_strs)
+
     if options:
       line.extend(options)
 
@@ -345,6 +350,7 @@ class Term(aclgenerator.Term):
     if addrs != ['any']:
       parent_token_set = set()
       for addr in addrs:
+        addr = cast(nacaddr.IPType, addr)
         parent_token_set.add(addr.parent_token)
       for token in parent_token_set:
         addresses.add('<%s>' % token[:31])
@@ -353,6 +359,7 @@ class Term(aclgenerator.Term):
     if exclude_addrs != ['any']:
       parent_token_set = set()
       for addr in exclude_addrs:
+        addr = cast(nacaddr.IPType, addr)
         parent_token_set.add(addr.parent_token)
       for token in parent_token_set:
         addresses.add('!<%s>' % token[:31])
@@ -432,7 +439,7 @@ class PacketFilter(aclgenerator.ACLGenerator):
       # ensure all options after the filter name are expected
       for opt in filter_options:
         if opt not in good_afs + good_options:
-          raise aclgenerator.UnsupportedTargetOption('%s %s %s %s' % (
+          raise aclgenerator.UnsupportedTargetOptionError('%s %s %s %s' % (
               '\nUnsupported option found in', self._PLATFORM,
               'target definition:', opt))
 
@@ -515,8 +522,8 @@ class PacketFilter(aclgenerator.ACLGenerator):
             logging.info('INFO: Term %s in policy %s expires '
                          'in less than two weeks.', term.name, filter_name)
           if term.expiration <= current_date:
-            logging.warn('WARNING: Term %s in policy %s is expired and '
-                         'will not be rendered.', term.name, filter_name)
+            logging.warning('WARNING: Term %s in policy %s is expired and '
+                            'will not be rendered.', term.name, filter_name)
             continue
 
         new_terms.append(self._TERM(term, filter_name, all_protocols_stateful,

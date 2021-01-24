@@ -19,14 +19,15 @@ from __future__ import unicode_literals
 
 import unittest
 
+from absl import logging
 from capirca.lib import policy_simple
 from six.moves import range
-from absl import logging
 
 
 class FieldTest(unittest.TestCase):
 
   def setUp(self):
+    super(FieldTest, self).setUp()
     logging.debug('======> %s <======', self.id())
 
   def testAppendAppends(self):
@@ -111,6 +112,7 @@ class FieldTest(unittest.TestCase):
 class BlockTest(unittest.TestCase):
 
   def setUp(self):
+    super(BlockTest, self).setUp()
     logging.debug('======> %s <======', self.id())
 
   def testRejectsNonField(self):
@@ -144,6 +146,7 @@ class BlockTest(unittest.TestCase):
 class PolicyTest(unittest.TestCase):
 
   def setUp(self):
+    super(PolicyTest, self).setUp()
     logging.debug('======> %s <======', self.id())
 
   def testAddMember(self):
@@ -176,6 +179,7 @@ class PolicyTest(unittest.TestCase):
 class PolicyParserTest(unittest.TestCase):
 
   def setUp(self):
+    super(PolicyParserTest, self).setUp()
     logging.debug('======> %s <======', self.id())
 
   def Parser(self, data):

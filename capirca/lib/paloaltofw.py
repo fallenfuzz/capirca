@@ -58,7 +58,7 @@ class Term(aclgenerator.Term):
 
   This is mostly useful for the __str__() method.
 
-  Args:
+  Attributes:
     obj: a policy.Term object
     term_type: type of filter to generate, e.g. inet or inet6
     filter_options: list of remaining target options (zones)
@@ -125,7 +125,7 @@ class Term(aclgenerator.Term):
 
 
 class Service(object):
-
+  """Generate PacketFilter policy terms."""
   service_map = {}
 
   def __init__(self, ports, service_name,
@@ -246,6 +246,17 @@ class PaloAltoFW(aclgenerator.ACLGenerator):
 
   INDENT = "  "
 
+  def __init__(self, pol, exp_info):
+    self.pafw_policies = []
+    self.addressbook = collections.OrderedDict()
+    self.applications = []
+    self.pan_applications = []
+    self.ports = []
+    self.from_zone = ""
+    self.to_zone = ""
+    self.policy_name = ""
+    super(PaloAltoFW, self).__init__(pol, exp_info)
+
   def _BuildTokens(self):
     """Build supported tokens for platform.
 
@@ -269,6 +280,7 @@ class PaloAltoFW(aclgenerator.ACLGenerator):
         "protocol",
         "source_address",
         "source_port",
+        "stateless_reply",
         "timeout",
         "pan_application",
         "translated"
@@ -295,15 +307,6 @@ class PaloAltoFW(aclgenerator.ACLGenerator):
       PaloAltoFWDuplicateTermError: Two terms were found with same name in
       same filter
     """
-    self.pafw_policies = []
-    self.addressbook = collections.OrderedDict()
-    self.applications = []
-    self.pan_applications = []
-    self.ports = []
-    self.from_zone = ""
-    self.to_zone = ""
-    self.policy_name = ""
-
     current_date = datetime.date.today()
     exp_info_date = current_date + datetime.timedelta(weeks=exp_info)
     for header, terms in pol.filters:
@@ -335,6 +338,12 @@ class PaloAltoFW(aclgenerator.ACLGenerator):
       term_dup_check = set()
       new_terms = []
       for term in terms:
+        if term.stateless_reply:
+          logging.warning(
+              "WARNING: Term %s in policy %s>%s is a stateless reply "
+              "term and will not be rendered.", term.name, self.from_zone,
+              self.to_zone)
+          continue
         term.name = self.FixTermLength(term.name)
         if term.name in term_dup_check:
           raise PaloAltoFWDuplicateTermError("You have a duplicate term: %s" %
@@ -347,9 +356,9 @@ class PaloAltoFW(aclgenerator.ACLGenerator):
                          "in less than two weeks.", term.name, self.from_zone,
                          self.to_zone)
           if term.expiration <= current_date:
-            logging.warn("WARNING: Term %s in policy %s>%s is expired and "
-                         "will not be rendered.",
-                         term.name, self.from_zone, self.to_zone)
+            logging.warning("WARNING: Term %s in policy %s>%s is expired and "
+                            "will not be rendered.",
+                            term.name, self.from_zone, self.to_zone)
             continue
 
         for i in term.source_address_exclude:

@@ -42,6 +42,19 @@ When inet4 or inet6 is specified, naming tokens with both IPv4 and IPv6 filters 
 
 The default format is inet4, and is implied if not other argument is given.
 
+Juniper MSMPC
+The juniper header designation has the following format:
+
+target:: juniper [filter name] {inet|inet6|mixed} {noverbose} {ingress|egress}
+filter name: defines the name of the juniper msmpc filter.
+inet6: specifies the output be for IPv6 only filters.
+mixed: specifies the output be for IPv4 and IPv6 filters. This is the default format.
+When inet4 or inet6 is specified, naming tokens with both IPv4 and IPv6 filters will be rendered using only the specified addresses.
+noverbose: omit additional term and address comments.
+ingress: filter will be applied in the input direction.
+egress: filter will be appliced in the output direction.
+When neither ingress or egress is specified, the filter will be applied in both (input-output) directions. This is the default.
+
 Cisco
 The cisco header designation has the following format:
 
@@ -141,6 +154,7 @@ The following are keywords that can be optionally supported by output generators
 
 address:: one or more network address tokens
 counter:: juniper only, update a counter for matching packets
+encapsulate:: juniper only, enable filter-based generic routing encapsulation (GRE) tunneling using the specified tunnel template
 destination-prefix:: juniper only, specify destination-prefix matching (e.g. source-prefix:: configured-neighbors-only)
 ether-type:: juniper only, specify matching ether-type(e.g. ether-type:: arp)
 fragement-offset:: juniper only, specify a fragment offset of a fragmented packet

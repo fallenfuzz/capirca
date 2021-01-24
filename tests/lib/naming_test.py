@@ -35,6 +35,7 @@ class NamingUnitTest(unittest.TestCase):
   """
 
   def setUp(self):
+    super(NamingUnitTest, self).setUp()
     self.defs = naming.Naming(None)
     servicedata = []
     servicedata.append('SVC1 = 80/tcp 81/udp 82/tcp')
@@ -179,6 +180,21 @@ class NamingUnitTest(unittest.TestCase):
     testdefs = naming.Naming(None)
     self.assertRaises(naming.NamingSyntaxError,
                       testdefs.ParseServiceList, badservicedata)
+
+  def testGetNetChildrenSingle(self):
+    expected = ['NET1']
+    self.assertEqual(expected, self.defs.GetNetChildren('NET2'))
+
+  def testGetNetChildrenMulti(self):
+    expected = ['FOO_V6', 'BAR_V6']
+    self.assertEqual(expected, self.defs.GetNetChildren('BAZ'))
+
+  def testGetNetChildrenQueryNotExist(self):
+    self.assertEqual([], self.defs.GetNetChildren('IDONOTEXIST'))
+
+  def testGetNetChildrenNoChild(self):
+    self.assertEqual([], self.defs.GetNetChildren('NET1'))
+
 
 if __name__ == '__main__':
   unittest.main()

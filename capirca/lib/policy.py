@@ -25,14 +25,13 @@ import datetime
 import os
 import sys
 
+from absl import logging
 from capirca.lib import nacaddr
 from capirca.lib import naming
 from ply import lex
 from ply import yacc
 from six.moves import map
 from six.moves import range
-
-from absl import logging
 
 
 DEFINITIONS = None
@@ -153,11 +152,10 @@ def TranslatePorts(ports, protocols, term_name):
     for port in ports:
       service_by_proto = DEFINITIONS.GetServiceByProto(port, proto)
       if not service_by_proto:
-        logging.warn('%s %s %s %s %s %s%s %s', 'Term', term_name,
-                     'has service', port, 'which is not defined with protocol',
-                     proto,
-                     ', but will be permitted. Unless intended, you should',
-                     'consider splitting the protocols into separate terms!')
+        logging.warning('Term %s has service %s which is not defined with '
+                        'protocol %s, but will be permitted. Unless intended'
+                        ', you should consider splitting the protocols '
+                        'into separate terms!', term_name, port, proto)
 
       for p in [x.split('-') for x in service_by_proto]:
         if len(p) == 1:
@@ -325,6 +323,7 @@ class Term(object):
     dscp-match: VarType.DSCP_MATCH
     dscp-except: VarType.DSCP_EXCEPT
     comments: VarType.COMMENT
+    encapsulate: VarType.ENCAPSULATE
     flexible-match-range: VarType.FLEXIBLE_MATCH_RANGE
     forwarding-class: VarType.FORWARDING_CLASS
     forwarding-class-except: VarType.FORWARDING_CLASS_EXCEPT
@@ -456,6 +455,8 @@ class Term(object):
     self.flexible_match_range = []
     self.source_prefix_except = []
     self.destination_prefix_except = []
+    self.inactive = False
+    self.encapsulate = None
     # srx specific
     self.vpn = None
     # gce specific
@@ -467,6 +468,8 @@ class Term(object):
     self.destination_interface = None
     self.platform = []
     self.platform_exclude = []
+    self.target_resources = []
+    self.target_service_accounts = []
     self.timeout = None
     self.flattened = False
     self.flattened_addr = None
@@ -621,6 +624,9 @@ class Term(object):
     if self.next_ip:
       if not other.next_ip:
         return False
+    if self.encapsulate:
+      if not other.encapsulate:
+        return False
     if self.fragment_offset:
       # fragment_offset looks like 'integer-integer' or just, 'integer'
       sfo = sorted([int(x) for x in self.fragment_offset.split('-')])
@@ -679,20 +685,26 @@ class Term(object):
     if self.address_exclude:
       ret_str.append('  address_exclude: %s' % sorted(self.address_exclude))
     if self.source_address:
-      ret_str.append('  source_address: %s' % sorted(self.source_address))
+      ret_str.append('  source_address: %s' %
+                     self._SortAddressesByFamily('source_address'))
     if self.source_address_exclude:
       ret_str.append('  source_address_exclude: %s' %
-                     sorted(self.source_address_exclude))
+                     self._SortAddressesByFamily('source_address_exclude'))
     if self.source_tag:
       ret_str.append('  source_tag: %s' % self.source_tag)
     if self.destination_address:
-      ret_str.append('  destination_address: %s'
-                     % sorted(self.destination_address))
+      ret_str.append('  destination_address: %s' %
+                     self._SortAddressesByFamily('destination_address'))
     if self.destination_address_exclude:
       ret_str.append('  destination_address_exclude: %s' %
-                     sorted(self.destination_address_exclude))
+                     self._SortAddressesByFamily('destination_address_exclude'))
     if self.destination_tag:
       ret_str.append('  destination_tag: %s' % self.destination_tag)
+    if self.target_resources:
+      ret_str.append('  target_resources: %s' % self.target_resources)
+    if self.target_service_accounts:
+      ret_str.append('  target_service_accounts: %s' %
+                     self.target_service_accounts)
     if self.source_prefix:
       ret_str.append('  source_prefix: %s' % self.source_prefix)
     if self.source_prefix_except:
@@ -713,6 +725,8 @@ class Term(object):
       ret_str.append('  icmp_code: %s' % sorted(self.icmp_code))
     if self.next_ip:
       ret_str.append('  next_ip: %s' % self.next_ip)
+    if self.encapsulate:
+      ret_str.append('  encapsulate: %s' % self.encapsulate)
     if self.protocol:
       ret_str.append('  protocol: %s' % sorted(self.protocol))
     if self.protocol_except:
@@ -900,6 +914,10 @@ class Term(object):
     if self.next_ip != other.next_ip:
       return False
 
+    # encapsulate
+    if self.encapsulate != other.encapsulate:
+      return False
+
     # flexible_match
     if self.flexible_match_range != other.flexible_match_range:
       return False
@@ -908,6 +926,27 @@ class Term(object):
 
   def __ne__(self, other):
     return not self.__eq__(other)
+
+  def _SortAddressesByFamily(self, addr_type):
+    """Provide the term address field to sort.
+
+    Method will sort v4 and then concatenate sorted v6 addresses. This will
+    support Term.__str__ function which outputs a string of
+    sorted IP addresses.
+
+    Args:
+      addr_type: string, this will be either 'source_address',
+        'source_address_exclude', 'destination_address' or
+        'destination_address_exclude'
+    Returns:
+      List of IP addresses sourted v4 then v6
+    """
+    # Sort v4 and v6
+    sort_v4 = sorted(self.GetAddressOfVersion(addr_type, 4))
+    sort_v6 = sorted(self.GetAddressOfVersion(addr_type, 6))
+
+    # Concatenate
+    return sort_v4 + sort_v6
 
   def AddressesByteLength(self, address_family=(4, 6)):
     """Returns the byte length of all IP addresses in the term.
@@ -972,7 +1011,7 @@ class Term(object):
       addr_type: string, this will be either
         'source_address', 'source_address_exclude',
         'destination_address' or 'destination_address_exclude'
-      af: int or None, either Term.INET4 or Term.INET6
+      af: int or None, either 4 for IPv4 or 6 for IPv6
 
     Returns:
       list of addresses of the correct family.
@@ -1072,6 +1111,10 @@ class Term(object):
           self.destination_tag.append(x.value)
         elif x.var_type is VarType.FLEXIBLE_MATCH_RANGE:
           self.flexible_match_range.append(x.value)
+        elif x.var_type is VarType.TARGET_RESOURCES:
+          self.target_resources.append(x.value)
+        elif x.var_type is VarType.TARGET_SERVICE_ACCOUNTS:
+          self.target_service_accounts.append(x.value)
         else:
           raise TermObjectTypeError(
               '%s isn\'t a type I know how to deal with (contains \'%s\')' % (
@@ -1106,6 +1149,8 @@ class Term(object):
         self.action.append(obj.value)
       elif obj.var_type is VarType.COUNTER:
         self.counter = obj
+      elif obj.var_type is VarType.ENCAPSULATE:
+        self.encapsulate = obj.value
       elif obj.var_type is VarType.TRAFFIC_CLASS_COUNT:
         self.traffic_class_count = obj
       elif obj.var_type is VarType.ICMP_TYPE:
@@ -1147,6 +1192,10 @@ class Term(object):
         self.vpn = (obj.value[0], obj.value[1])
       elif obj.var_type is VarType.TTL:
         self.ttl = int(obj.value)
+      elif obj.var_type is VarType.TARGET_RESOURCES:
+        self.target_resources.append(obj.value)
+      elif obj.var_type is VarType.TARGET_SERVICE_ACCOUNTS:
+        self.target_service_accounts.append(obj.value)
       else:
         raise TermObjectTypeError(
             '%s isn\'t a type I know how to deal with' % (type(obj)))
@@ -1167,6 +1216,8 @@ class Term(object):
         upper-layer protocol restrictions
       InvalidTermActionError: action and routing-instance both defined
       InvalidTermTTLValue: TTL value is invalid.
+      MixedPortandNonPortProtos: Ports specified with protocol that doesn't
+        support ports.
 
     This should be called when the term is fully formed, and
     all of the options are set.
@@ -1178,7 +1229,7 @@ class Term(object):
         raise ParseError(
             'term "%s" has both verbatim and non-verbatim tokens.' % self.name)
     else:
-      if not self.action and not self.routing_instance and not self.next_ip:
+      if not self.action and not self.routing_instance and not self.next_ip and not self.encapsulate:
         raise TermNoActionError('no action specified for term %s' % self.name)
       # have we specified a port with a protocol that doesn't support ports?
       if self.source_port or self.destination_port or self.port:
@@ -1228,9 +1279,9 @@ class Term(object):
     proto_copy = [p for p in self.protocol if p != 'tcp' and p != 'udp']
     if ('tcp'in self.protocol or 'udp' in self.protocol) and proto_copy:
       if self.source_port or self.destination_port or self.port:
-        raise MixedPortandNonPortProtos('Term %s contains mixed uses of '
-           'protocols with and without port numbers.\nProtocols: %s' %
-            (self.name, self.protocol))
+        raise MixedPortandNonPortProtos(
+            'Term %s contains mixed uses of protocols with and without port '
+            'numbers.\nProtocols: %s' % (self.name, self.protocol))
 
     if self.ttl:
       if not _MIN_TTL <= self.ttl <= _MAX_TTL:
@@ -1446,19 +1497,17 @@ class VarType(object):
   PRIORITY = 56
   TTL = 57
   LOG_LIMIT = 58
+  TARGET_RESOURCES = 59
+  TARGET_SERVICE_ACCOUNTS = 60
+  ENCAPSULATE = 61
 
   def __init__(self, var_type, value):
     self.var_type = var_type
-    if self.var_type == self.COMMENT:
+    if self.var_type == self.COMMENT or self.var_type == self.LOG_NAME:
       # remove the double quotes
-      comment = value.strip('"')
+      val = str(value).strip('"')
       # make all of the lines start w/o leading whitespace.
-      self.value = '\n'.join([x.lstrip() for x in comment.splitlines()])
-    elif self.var_type == self.LOG_NAME:
-      # remove the double quotes
-      log_name = value.strip('"')
-      # make all of the lines start w/o leading whitespace.
-      self.value = '\n'.join([x.lstrip() for x in log_name.splitlines()])
+      self.value = '\n'.join([x.lstrip() for x in val.splitlines()])
     else:
       self.value = value
 
@@ -1623,6 +1672,7 @@ tokens = (
     'DSCP_RANGE',
     'DSCP_SET',
     'DTAG',
+    'ENCAPSULATE',
     'ESCAPEDSTRING',
     'ETHER_TYPE',
     'EXPIRATION',
@@ -1642,6 +1692,8 @@ tokens = (
     'LOG_LIMIT',
     'LOG_NAME',
     'LOSS_PRIORITY',
+    'LPAREN',
+    'LSQUARE',
     'NEXT_IP',
     'OPTION',
     'OWNER',
@@ -1655,6 +1707,8 @@ tokens = (
     'PROTOCOL',
     'PROTOCOL_EXCEPT',
     'QOS',
+    'RPAREN',
+    'RSQUARE',
     'PAN_APPLICATION',
     'ROUTING_INSTANCE',
     'SADDR',
@@ -1666,6 +1720,8 @@ tokens = (
     'STAG',
     'STRING',
     'TARGET',
+    'TARGET_RESOURCES',
+    'TARGET_SERVICE_ACCOUNTS',
     'TERM',
     'TIMEOUT',
     'TRAFFIC_CLASS_COUNT',
@@ -1677,6 +1733,10 @@ tokens = (
 
 literals = r':{},-/'
 t_ignore = ' \t'
+t_LSQUARE = r'\['
+t_RSQUARE = r'\]'
+t_LPAREN = r'\('
+t_RPAREN = r'\)'
 
 reserved = {
     'action': 'ACTION',
@@ -1694,6 +1754,7 @@ reserved = {
     'dscp-except': 'DSCP_EXCEPT',
     'dscp-match': 'DSCP_MATCH',
     'dscp-set': 'DSCP_SET',
+    'encapsulate': 'ENCAPSULATE',
     'ether-type': 'ETHER_TYPE',
     'expiration': 'EXPIRATION',
     'flexible-match-range': 'FLEXIBLE_MATCH_RANGE',
@@ -1734,6 +1795,8 @@ reserved = {
     'source-port': 'SPORT',
     'source-tag': 'STAG',
     'target': 'TARGET',
+    'target-resources': 'TARGET_RESOURCES',
+    'target-service-accounts': 'TARGET_SERVICE_ACCOUNTS',
     'term': 'TERM',
     'timeout': 'TIMEOUT',
     'traffic-class-count': 'TRAFFIC_CLASS_COUNT',
@@ -1786,7 +1849,8 @@ def t_DSCP_RANGE(t):
 
 
 def t_DSCP(t):
-  r'\b((b[0-1]{6})|(af[1-4]{1}[1-3]{1})|(be)|(ef)|(cs[0-7]{1}))\b'
+  # we need to handle the '-' as part of the word, not as a boundary
+  r'\b((b[0-1]{6})|(af[1-4]{1}[1-3]{1})|(be)|(ef)|(cs[0-7]{1}))(?![\w-])\b'
   t.type = reserved.get(t.value, 'DSCP')
   return t
 
@@ -1870,6 +1934,7 @@ def p_term_spec(p):
                 | term_spec dscp_set_spec
                 | term_spec dscp_match_spec
                 | term_spec dscp_except_spec
+                | term_spec encapsulate_spec
                 | term_spec ether_type_spec
                 | term_spec exclude_spec
                 | term_spec expiration_spec
@@ -1900,6 +1965,8 @@ def p_term_spec(p):
                 | term_spec pan_application_spec
                 | term_spec routinginstance_spec
                 | term_spec tag_list_spec
+                | term_spec target_resources_spec
+                | term_spec target_service_accounts_spec
                 | term_spec timeout_spec
                 | term_spec ttl_spec
                 | term_spec traffic_type_spec
@@ -1988,6 +2055,11 @@ def p_forwarding_class_except_spec(p):
 def p_next_ip_spec(p):
   """ next_ip_spec : NEXT_IP ':' ':' STRING """
   p[0] = VarType(VarType.NEXT_IP, p[4])
+
+
+def p_encapsulate_spec(p):
+  """ encapsulate_spec : ENCAPSULATE ':' ':' STRING """
+  p[0] = VarType(VarType.ENCAPSULATE, p[4])
 
 
 def p_icmp_type_spec(p):
@@ -2143,6 +2215,21 @@ def p_tag_list_spec(p):
       p[0].append(VarType(VarType.STAG, tag))
     elif p[1].find('destination-tag') >= 0:
       p[0].append(VarType(VarType.DTAG, tag))
+
+
+def p_target_resources_spec(p):
+  """ target_resources_spec : TARGET_RESOURCES ':' ':' one_or_more_tuples
+  """
+  p[0] = []
+  for target_resource in p[4]:
+    p[0].append(VarType(VarType.TARGET_RESOURCES, target_resource))
+
+
+def p_target_service_accounts_spec(p):
+  """ target_service_accounts_spec : TARGET_SERVICE_ACCOUNTS ':' ':' one_or_more_strings """
+  p[0] = []
+  for service_account in p[4]:
+    p[0].append(VarType(VarType.TARGET_SERVICE_ACCOUNTS, service_account))
 
 
 def p_ether_type_spec(p):
@@ -2301,6 +2388,32 @@ def p_one_or_more_strings(p):
     else:
       p[0] = [p[1]]
 
+def p_one_or_more_tuples(p):
+  """ one_or_more_tuples : LSQUARE one_or_more_tuples RSQUARE
+                         | one_or_more_tuples ',' one_tuple
+                         | one_or_more_tuples one_tuple
+                         | one_tuple
+                         | """
+
+  if len(p) > 1:
+    if p[1] == '[':
+      p[0] = p[2]
+    elif type(p[1]) == type([]):
+      if p[2] == ',':
+        p[1].append(p[3])
+      else:
+        p[1].append(p[2])
+      p[0] = p[1]
+    else:
+      p[0] = [p[1]]
+
+
+def p_one_tuple(p):
+  """ one_tuple : LPAREN STRING ',' STRING RPAREN
+                | """
+  p[0] = (p[2], p[4])
+
+
 def p_one_or_more_ints(p):
   """ one_or_more_ints : one_or_more_ints INTEGER
                       | INTEGER
@@ -2329,7 +2442,8 @@ def p_strings_or_ints(p):
 
 def p_error(p):
   """."""
-  next_token = yacc.token()
+  global parser
+  next_token = parser.token()
   if next_token is None:
     use_token = 'EOF'
   else:
@@ -2340,6 +2454,8 @@ def p_error(p):
                      % (p.value, p.type, p.lineno, use_token))
   else:
     raise ParseError(' ERROR you likely have unablanaced "{"\'s')
+
+parser = yacc.yacc(write_tables=False, debug=0, errorlog=yacc.NullLogger())
 
 # pylint: enable=unused-argument,invalid-name,g-short-docstring-punctuation
 # pylint: enable=g-docstring-quotes,g-short-docstring-space
@@ -2457,8 +2573,8 @@ def ParsePolicy(data, definitions=None, optimize=True, base_dir='',
     lexer = lex.lex()
 
     preprocessed_data = '\n'.join(_Preprocess(data, base_dir=base_dir))
-    p = yacc.yacc(write_tables=False, debug=0, errorlog=yacc.NullLogger())
-    policy = p.parse(preprocessed_data, lexer=lexer)
+    global parser
+    policy = parser.parse(preprocessed_data, lexer=lexer)
     policy.filename = filename
     return policy
 

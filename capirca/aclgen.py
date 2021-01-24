@@ -24,6 +24,7 @@ from __future__ import unicode_literals
 import copy
 import multiprocessing
 import os
+import pathlib
 import sys
 
 from absl import app
@@ -38,9 +39,11 @@ from capirca.lib import ciscoasa
 from capirca.lib import ciscoxr
 from capirca.lib import cloudarmor
 from capirca.lib import gce
+from capirca.lib import gcp_hf
 from capirca.lib import ipset
 from capirca.lib import iptables
 from capirca.lib import juniper
+from capirca.lib import junipermsmpc
 from capirca.lib import junipersrx
 from capirca.lib import naming
 from capirca.lib import nftables
@@ -53,58 +56,77 @@ from capirca.lib import speedway
 from capirca.lib import srxlo
 from capirca.lib import windows_advfirewall
 
+from capirca.utils import config
+
 
 FLAGS = flags.FLAGS
-flags.DEFINE_string(
-    'base_directory',
-    './policies',
-    'The base directory to look for acls; '
-    'typically where you\'d find ./corp and ./prod')
-flags.DEFINE_string(
-    'definitions_directory',
-    './def',
-    'Directory where the definitions can be found.')
-flags.DEFINE_string(
-    'policy_file',
-    None,
-    'Individual policy file to generate.')
-flags.DEFINE_string(
-    'output_directory',
-    './',
-    'Directory to output the rendered acls.')
-flags.DEFINE_boolean(
-    'optimize',
-    False,
-    'Turn on optimization.',
-    short_name='o')
-flags.DEFINE_boolean(
-    'recursive',
-    True,
-    'Descend recursively from the base directory rendering acls')
-flags.DEFINE_boolean(
-    'debug',
-    False,
-    'Debug messages')
-flags.DEFINE_boolean(
-    'verbose',
-    False,
-    'Verbose messages')
-flags.DEFINE_list(
-    'ignore_directories',
-    'DEPRECATED, def',
-    "Don't descend into directories that look like this string")
-flags.DEFINE_integer(
-    'max_renderers',
-    10,
-    'Max number of rendering processes to use.')
-flags.DEFINE_boolean(
-    'shade_check',
-    False,
-    'Raise an error when a term is completely shaded by a prior term.')
-flags.DEFINE_integer(
-    'exp_info',
-    2,
-    'Print a info message when a term is set to expire in that many weeks.')
+
+
+def SetupFlags():
+  flags.DEFINE_string(
+      'base_directory',
+      None,
+      'The base directory to look for acls; '
+      'typically where you\'d find ./corp and ./prod\n(default: \'%s\')'
+      % config.defaults['base_directory'])
+  flags.DEFINE_string(
+      'definitions_directory',
+      None,
+      'Directory where the definitions can be found.\n(default: \'%s\')'
+      % config.defaults['definitions_directory'])
+  flags.DEFINE_string(
+      'policy_file',
+      None,
+      'Individual policy file to generate.')
+  flags.DEFINE_string(
+      'output_directory',
+      None,
+      'Directory to output the rendered acls.\n(default: \'%s\')'
+      % config.defaults['output_directory'])
+  flags.DEFINE_boolean(
+      'optimize',
+      None,
+      'Turn on optimization.\n(default: \'%s\')' % config.defaults['optimize'],
+      short_name='o')
+  flags.DEFINE_boolean(
+      'recursive',
+      None,
+      'Descend recursively from the base directory rendering acls\n(default: \'%s\')'
+      % str(config.defaults['recursive']).lower())
+  flags.DEFINE_boolean(
+      'debug',
+      None,
+      'Debug messages\n(default: \'%s\')' %
+      str(config.defaults['debug']).lower())
+  flags.DEFINE_boolean(
+      'verbose',
+      None,
+      'Verbose messages\n(default: \'%s\')' %
+      str(config.defaults['verbose']).lower())
+  flags.DEFINE_list(
+      'ignore_directories',
+      None,
+      'Don\'t descend into directories that look like this string\n(default: \'%s\')'
+      % ','.join(config.defaults['ignore_directories']))
+  flags.DEFINE_integer(
+      'max_renderers',
+      None,
+      'Max number of rendering processes to use.\n(default: \'%s\')'
+      % config.defaults['max_renderers'])
+  flags.DEFINE_boolean(
+      'shade_check',
+      None,
+      'Raise an error when a term is completely shaded by a prior term.\n(default: \'%s\')'
+      % str(config.defaults['shade_check']).lower())
+  flags.DEFINE_integer(
+      'exp_info',
+      None,
+      'Print a info message when a term is set to expire in that many weeks.\n(default: \'%s\')'
+      % str(config.defaults['exp_info']))
+  flags.DEFINE_multi_string(
+      'config_file',
+      None,
+      'A yaml file with the configuration options for capirca')
 
 
 class Error(Exception):
@@ -138,11 +160,12 @@ def SkipLines(text, skip_line_func=False):
   return [x for x in text if not skip_line_func(x)]
 
 
-def RenderFile(input_file, output_directory, definitions,
+def RenderFile(base_directory, input_file, output_directory, definitions,
                exp_info, write_files):
   """Render a single file.
 
   Args:
+    base_directory: The base directory to look for acls.
     input_file: the name of the input policy file.
     output_directory: the directory in which we place the rendered file.
     definitions: the definitions from naming.Naming().
@@ -161,8 +184,10 @@ def RenderFile(input_file, output_directory, definitions,
   eacl = False
   gca = False
   gcefw = False
+  gcphf = False
   ips = False
   ipt = False
+  msmpc = False
   spd = False
   nsx = False
   pcap_accept = False
@@ -176,18 +201,19 @@ def RenderFile(input_file, output_directory, definitions,
   paloalto = False
 
   try:
-    conf = open(input_file).read()
-    logging.debug('opened and read %s', input_file)
+    with open(input_file) as f:
+      conf = f.read()
+      logging.debug('opened and read %s', input_file)
   except IOError as e:
-    logging.warn('bad file: \n%s', e)
+    logging.warning('bad file: \n%s', e)
     raise
 
   try:
     pol = policy.ParsePolicy(
         conf, definitions, optimize=FLAGS.optimize,
-        base_dir=FLAGS.base_directory, shade_check=FLAGS.shade_check)
+        base_dir=base_directory, shade_check=FLAGS.shade_check)
   except policy.ShadingError as e:
-    logging.warn('shading errors for %s:\n%s', input_file, e)
+    logging.warning('shading errors for %s:\n%s', input_file, e)
     return
   except (policy.Error, naming.Error):
     raise ACLParserError('Error parsing policy file %s:\n%s%s' % (
@@ -213,6 +239,8 @@ def RenderFile(input_file, output_directory, definitions,
     ips = copy.deepcopy(pol)
   if 'iptables' in platforms:
     ipt = copy.deepcopy(pol)
+  if 'msmpc' in platforms:
+    msmpc = copy.deepcopy(pol)
   if 'nsxv' in platforms:
     nsx = copy.deepcopy(pol)
   if 'packetfilter' in platforms:
@@ -234,6 +262,8 @@ def RenderFile(input_file, output_directory, definitions,
     nft = copy.deepcopy(pol)
   if 'gce' in platforms:
     gcefw = copy.deepcopy(pol)
+  if 'gcp_hf' in platforms:
+    gcphf = copy.deepcopy(pol)
   if 'paloalto' in platforms:
     paloalto = copy.deepcopy(pol)
   if 'cloudarmor' in platforms:
@@ -245,6 +275,10 @@ def RenderFile(input_file, output_directory, definitions,
   try:
     if jcl:
       acl_obj = juniper.Juniper(jcl, exp_info)
+      RenderACL(str(acl_obj), acl_obj.SUFFIX, output_directory,
+                input_file, write_files)
+    if msmpc:
+      acl_obj = junipermsmpc.JuniperMSMPC(msmpc, exp_info)
       RenderACL(str(acl_obj), acl_obj.SUFFIX, output_directory,
                 input_file, write_files)
     if srx:
@@ -319,6 +353,11 @@ def RenderFile(input_file, output_directory, definitions,
       acl_obj = gce.GCE(gcefw, exp_info)
       RenderACL(str(acl_obj), acl_obj.SUFFIX, output_directory,
                 input_file, write_files)
+    if gcphf:
+      acl_obj = gcp_hf.HierarchicalFirewall(gcphf, exp_info)
+      RenderACL(str(acl_obj), acl_obj.SUFFIX, output_directory,
+                input_file, write_files)
+
     if paloalto:
       acl_obj = paloaltofw.PaloAltoFW(paloalto, exp_info)
       RenderACL(str(acl_obj), acl_obj.SUFFIX, output_directory,
@@ -328,8 +367,8 @@ def RenderFile(input_file, output_directory, definitions,
       RenderACL(str(acl_obj), acl_obj.SUFFIX, output_directory,
                 input_file, write_files)
   # TODO(robankeny) add additional errors.
-  except (juniper.Error, junipersrx.Error, cisco.Error, ipset.Error,
-          iptables.Error, speedway.Error, pcap.Error,
+  except (juniper.Error, junipermsmpc.Error, junipersrx.Error, cisco.Error,
+          ipset.Error, iptables.Error, speedway.Error, pcap.Error,
           aclgenerator.Error, aruba.Error, nftables.Error, gce.Error,
           cloudarmor.Error) as e:
     raise ACLGeneratorError(
@@ -370,9 +409,11 @@ def FilesUpdated(file_name, new_text, binary):
   """
   try:
     if binary:
-      conf = open(file_name, 'rb').read()
+      with open(file_name, 'rb') as f:
+        conf = f.read()
     else:
-      conf = open(file_name).read()
+      with open(file_name) as f:
+        conf = f.read()
   except IOError:
     return True
   if not binary:
@@ -388,13 +429,15 @@ def FilesUpdated(file_name, new_text, binary):
   return conf != new_text
 
 
-def DescendRecursively(input_dirname, output_dirname, definitions, depth=1):
+def DescendRecursively(input_dirname, output_dirname, definitions,
+                       ignore_directories, depth=1):
   """Recursively descend from input_dirname looking for policy files to render.
 
   Args:
     input_dirname: the base directory.
     output_dirname: where to place the rendered files.
     definitions: naming.Naming object.
+    ignore_directories: directories to ignore in search
     depth: integer, for outputting '---> rendering prod/corp-backbone.jcl'.
 
   Returns:
@@ -412,20 +455,25 @@ def DescendRecursively(input_dirname, output_dirname, definitions, depth=1):
     if curdir == 'pol':
       for input_file in [x for x in os.listdir(input_dirname + '/pol')
                          if x.endswith('.pol')]:
-        files.append({'in_file': os.path.join(input_dirname, 'pol', input_file),
-                      'out_dir': output_dirname,
-                      'defs': definitions})
+        files.append({
+            'in_file': os.path.join(input_dirname, 'pol', input_file),
+            'out_dir': output_dirname,
+            'defs': definitions})
     else:
       # so we don't have a policy directory, we should check if this new
       # directory has a policy directory
-      if curdir in FLAGS.ignore_directories:
+      if curdir in ignore_directories:
         continue
-      logging.warn('-' * (2 * depth) + '> %s' % (
+      logging.warning('-' * (2 * depth) + '> %s' % (
           input_dirname + '/' + curdir))
-      files_found = DescendRecursively(input_dirname + '/' + curdir,
-                                       output_dirname + '/' + curdir,
-                                       definitions, depth + 1)
-      logging.warn('-' * (2 * depth) + '> %s (%d pol files found)' % (
+      files_found = DescendRecursively(
+          input_dirname + '/' + curdir,
+          output_dirname + '/' + curdir,
+          definitions,
+          ignore_directories,
+          depth + 1
+      )
+      logging.warning('-' * (2 * depth) + '> %s (%d pol files found)' % (
           input_dirname + '/' + curdir, len(files_found)))
       files.extend(files_found)
 
@@ -448,60 +496,92 @@ def WriteFiles(write_files):
 
 def _WriteFile(output_file, file_string):
   try:
+    parent_path = pathlib.Path(output_file).parent
+    if not parent_path.is_dir():
+      parent_path.mkdir(parents=True, exist_ok=True)
     with open(output_file, 'w') as output:
       logging.info('writing file: %s', output_file)
       output.write(file_string)
   except IOError:
-    logging.warn('error while writing file: %s', output_file)
+    logging.warning('error while writing file: %s', output_file)
     raise
 
 
-def main(unused_argv):
-  if FLAGS.verbose:
-    logging.set_verbosity(logging.INFO)
-  if FLAGS.debug:
-    logging.set_verbosity(logging.DEBUG)
-  logging.debug('binary: %s\noptimize: %d\nbase_directory: %s\n'
-                'policy_file: %s\nrendered_acl_directory: %s',
-                str(sys.argv[0]),
-                int(FLAGS.optimize),
-                str(FLAGS.base_directory),
-                str(FLAGS.policy_file),
-                str(FLAGS.output_directory))
+def DiscoverAllPolicies(base_directory, output_directory, definitions):
+  logging.info('finding policies...')
+  pols = []
+  pols.extend(
+      DescendRecursively(
+          base_directory,
+          output_directory,
+          definitions,
+          list()
+      )
+  )
+  return pols
 
+
+def Run(
+    base_directory,
+    definitions_directory,
+    policy_file,
+    output_directory,
+    exp_info,
+    max_renderers,
+    ignore_directories,
+    context
+):
   definitions = None
   try:
-    definitions = naming.Naming(FLAGS.definitions_directory)
+    definitions = naming.Naming(definitions_directory)
   except naming.NoDefinitionsError:
-    err_msg = 'bad definitions directory: %s' % FLAGS.definitions_directory
+    err_msg = 'bad definitions directory: %s' % definitions_directory
     logging.fatal(err_msg)
 
   # thead-safe list for storing files to write
-  manager = multiprocessing.Manager()
+  manager = context.Manager()
   write_files = manager.list()
 
   with_errors = False
-  if FLAGS.policy_file:
+  if policy_file:
     # render just one file
     logging.info('rendering one file')
-    RenderFile(FLAGS.policy_file, FLAGS.output_directory, definitions,
-               FLAGS.exp_info, write_files)
+    RenderFile(
+        base_directory,
+        policy_file,
+        output_directory,
+        definitions,
+        exp_info,
+        write_files)
   else:
     # render all files in parallel
     logging.info('finding policies...')
     pols = []
-    pols.extend(DescendRecursively(FLAGS.base_directory, FLAGS.output_directory,
-                                   definitions))
+    pols.extend(
+        DescendRecursively(
+            base_directory,
+            output_directory,
+            definitions,
+            ignore_directories
+        )
+    )
 
-    pool = multiprocessing.Pool(processes=FLAGS.max_renderers)
+    pool = context.Pool(processes=max_renderers)
     results = []
-    for x in pols:
-      results.append(pool.apply_async(RenderFile,
-                                      args=(x.get('in_file'),
-                                            x.get('out_dir'),
-                                            definitions,
-                                            FLAGS.exp_info,
-                                            write_files)))
+    for pol in pols:
+      results.append(
+          pool.apply_async(
+              RenderFile,
+              args=(
+                  base_directory,
+                  pol.get('in_file'),
+                  pol.get('out_dir'),
+                  definitions,
+                  exp_info,
+                  write_files
+              )
+          )
+      )
     pool.close()
     pool.join()
 
@@ -510,20 +590,56 @@ def main(unused_argv):
         result.get()
       except (ACLParserError, ACLGeneratorError) as e:
         with_errors = True
-        logging.warn('\n\nerror encountered in rendering process:\n%s\n\n', e)
+        logging.warning('\n\nerror encountered in rendering '
+                        'process:\n%s\n\n', e)
 
   # actually write files to disk
   WriteFiles(write_files)
 
   if with_errors:
-    logging.warn('done, with errors.')
+    logging.warning('done, with errors.')
     sys.exit(1)
   else:
     logging.info('done.')
 
 
+def main(argv):
+  del argv  # Unused.
+
+  configs = config.generate_configs(FLAGS)
+
+  if configs['verbose']:
+    logging.set_verbosity(logging.INFO)
+  if configs['debug']:
+    logging.set_verbosity(logging.DEBUG)
+  logging.debug(
+      'binary: %s\noptimize: %d\nbase_directory: %s\n'
+      'policy_file: %s\nrendered_acl_directory: %s',
+      str(sys.argv[0]),
+      int(configs['optimize']),
+      str(configs['base_directory']),
+      str(configs['policy_file']),
+      str(configs['output_directory'])
+  )
+  logging.debug('capirca configurations: %s', configs)
+
+  context = multiprocessing.get_context()
+  Run(
+      configs['base_directory'],
+      configs['definitions_directory'],
+      configs['policy_file'],
+      configs['output_directory'],
+      configs['exp_info'],
+      configs['max_renderers'],
+      configs['ignore_directories'],
+      context
+  )
+
+
 def entry_point():
+  SetupFlags()
   app.run(main)
+
 
 if __name__ == '__main__':
   entry_point()

@@ -30,10 +30,10 @@ from __future__ import unicode_literals
 import collections
 import datetime
 
+from absl import logging
 from capirca.lib import aclgenerator
 from capirca.lib import nacaddr
 import six
-from absl import logging
 
 
 class Error(Exception):
@@ -124,9 +124,9 @@ class Term(aclgenerator.Term):
       src_addrs = self._CalculateAddrs(self.term.source_address,
                                        self.term.source_address_exclude)
       if not src_addrs:
-        logging.warn(self.NO_AF_LOG_ADDR.substitute(term=self.term.name,
-                                                    direction='source',
-                                                    af=self.af))
+        logging.warning(self.NO_AF_LOG_ADDR.substitute(term=self.term.name,
+                                                       direction='source',
+                                                       af=self.af))
         return ''
       # TODO(castagno): Add support for ipv6
       output.append('ip saddr %s' % self._FormatMatch(src_addrs))
@@ -136,9 +136,9 @@ class Term(aclgenerator.Term):
       dst_addrs = self._CalculateAddrs(self.term.destination_address,
                                        self.term.destination_address_exclude)
       if not dst_addrs:
-        logging.warn(self.NO_AF_LOG_ADDR.substitute(term=self.term.name,
-                                                    direction='destination',
-                                                    af=self.af))
+        logging.warning(self.NO_AF_LOG_ADDR.substitute(term=self.term.name,
+                                                       direction='destination',
+                                                       af=self.af))
         return ''
       # TODO(castagno): Add support for ipv6
       output.append('ip daddr %s' % self._FormatMatch(dst_addrs))
@@ -175,7 +175,8 @@ class Term(aclgenerator.Term):
       if icmp_types != ['']:
         # nft intepreter requires ICMP types to be spelled out
         icmp_name_types = self.ICMP_TYPE[self.AF_MAP[self.af]]
-        icmp_type_names = dict((v, k) for k, v in six.iteritems(icmp_name_types))
+        icmp_type_names = dict((v, k) for k, v in six.iteritems(
+            icmp_name_types))
         output.append('icmp type %s' %
                       self._FormatMatch([icmp_type_names[icmp_type] for
                                          icmp_type in icmp_types]))
@@ -207,7 +208,7 @@ class Term(aclgenerator.Term):
       if len(comment_data) > self.MAX_CHARACTERS:
         # Have to use the first MAX_CHARACTERS characters
         comment_data = comment_data[:self.MAX_CHARACTERS]
-        logging.warn(
+        logging.warning(
             'Term %s in policy is too long (>%d characters) '
             'and will be truncated', self.term.name, self.MAX_CHARACTERS)
 
@@ -349,7 +350,7 @@ class Nftables(aclgenerator.ACLGenerator):
 
         if term.expiration:
           if term.expiration < current_date:
-            logging.warn(
+            logging.warning(
                 'Term %s in policy %s is expired and will not be rendered.',
                 term.name, chain_name)
             continue

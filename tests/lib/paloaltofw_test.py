@@ -72,6 +72,15 @@ term only-pan-app {
   action:: accept
 }
 """
+GOOD_TERM_4_STATELESS_REPLY = """
+term good-term-stateless-reply {
+  comment:: "ThisIsAStatelessReply"
+  destination-address:: SOME_HOST
+  protocol:: tcp
+  pan-application:: ssl http
+  action:: accept
+}
+"""
 
 EXPIRED_TERM_1 = """
 term expired_test {
@@ -151,6 +160,7 @@ SUPPORTED_TOKENS = {
     'protocol',
     'source_address',
     'source_port',
+    'stateless_reply',
     'timeout',
     'pan_application',
     'translated'
@@ -217,6 +227,7 @@ _IPSET3 = [nacaddr.IP('10.23.0.0/23')]
 class PaloAltoFWTest(unittest.TestCase):
 
   def setUp(self):
+    super(PaloAltoFWTest, self).setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   def testTermAndFilterName(self):
@@ -224,10 +235,10 @@ class PaloAltoFWTest(unittest.TestCase):
     self.naming.GetServiceByProto.return_value = ['25']
 
     paloalto = paloaltofw.PaloAltoFW(
-        policy.ParsePolicy(GOOD_HEADER_1 +GOOD_TERM_1,
+        policy.ParsePolicy(GOOD_HEADER_1 + GOOD_TERM_1,
                            self.naming), EXP_INFO)
     output = str(paloalto)
-    self.failUnless('<entry name="good-term-1">' in output, output)
+    self.assertIn('<entry name="good-term-1">', output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('FOOBAR')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
@@ -237,12 +248,12 @@ class PaloAltoFWTest(unittest.TestCase):
         policy.ParsePolicy(GOOD_HEADER_1 + DEFAULT_TERM_1,
                            self.naming), EXP_INFO)
     output = str(paloalto)
-    self.failUnless('<action>deny</action>' in output, output)
+    self.assertIn('<action>deny</action>', output, output)
 
   def testIcmpTypes(self):
     pol = policy.ParsePolicy(GOOD_HEADER_1 + ICMP_TYPE_TERM_1, self.naming)
     output = str(paloaltofw.PaloAltoFW(pol, EXP_INFO))
-    self.failUnless('<member>ping</member>' in output, output)
+    self.assertIn('<member>ping</member>', output, output)
 
   def testBadICMP(self):
     pol = policy.ParsePolicy(GOOD_HEADER_1 + BAD_ICMP_TERM_1, self.naming)
@@ -252,15 +263,29 @@ class PaloAltoFWTest(unittest.TestCase):
   def testICMPProtocolOnly(self):
     pol = policy.ParsePolicy(GOOD_HEADER_1 + ICMP_ONLY_TERM_1, self.naming)
     output = str(paloaltofw.PaloAltoFW(pol, EXP_INFO))
-    self.failUnless('<member>ping</member>' in output, output)
+    self.assertIn('<member>ping</member>', output, output)
+
+  def testSkipStatelessReply(self):
+    pol = policy.ParsePolicy(GOOD_HEADER_1 + GOOD_TERM_4_STATELESS_REPLY,
+                             self.naming)
+
+    # Add stateless_reply to terms, there is no current way to include it in the
+    # term definition.
+    _, terms = pol.filters[0]
+    for term in terms:
+      term.stateless_reply = True
+
+    output = str(paloaltofw.PaloAltoFW(pol, EXP_INFO))
+    self.assertNotIn('good-term-stateless-reply', output, output)
 
   def testBuildTokens(self):
     self.naming.GetServiceByProto.side_effect = [['25'], ['26']]
     pol1 = paloaltofw.PaloAltoFW(policy.ParsePolicy(GOOD_HEADER_1 + GOOD_TERM_2,
                                                     self.naming), EXP_INFO)
     st, sst = pol1._BuildTokens()
-    self.assertEquals(st, SUPPORTED_TOKENS)
-    self.assertEquals(sst, SUPPORTED_SUB_TOKENS)
+    self.assertEqual(st, SUPPORTED_TOKENS)
+    self.assertEqual(sst, SUPPORTED_SUB_TOKENS)
+
 
 if __name__ == '__main__':
   unittest.main()

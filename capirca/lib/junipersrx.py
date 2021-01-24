@@ -26,10 +26,13 @@ import copy
 import datetime
 import itertools
 
+from absl import logging
 from capirca.lib import aclgenerator
 from capirca.lib import nacaddr
 import six
-from absl import logging
+
+
+ICMP_TERM_LIMIT = 8
 
 
 def JunipersrxList(name, data):
@@ -295,6 +298,16 @@ class JuniperSRX(aclgenerator.ACLGenerator):
   # IPv6 are 32 bytes compared to IPv4, this is used as a multiplier.
   _IPV6_SIZE = 4
 
+  def __init__(self, pol, exp_info):
+    self.srx_policies = []
+    self.addressbook = collections.OrderedDict()
+    self.applications = []
+    self.ports = []
+    self.from_zone = ''
+    self.to_zone = ''
+    self.addr_book_type = set()
+    super(JuniperSRX, self).__init__(pol, exp_info)
+
   def _BuildTokens(self):
     """Build supported tokens for platform.
 
@@ -340,14 +353,6 @@ class JuniperSRX(aclgenerator.ACLGenerator):
       ConflictingApplicationSetsError: When two duplicate named terms have
                                        conflicting application entries
     """
-    self.srx_policies = []
-    self.addressbook = collections.OrderedDict()
-    self.applications = []
-    self.ports = []
-    self.from_zone = ''
-    self.to_zone = ''
-    self.addr_book_type = set()
-
     current_date = datetime.datetime.utcnow().date()
     exp_info_date = current_date + datetime.timedelta(weeks=exp_info)
 
@@ -443,8 +448,8 @@ class JuniperSRX(aclgenerator.ACLGenerator):
       self._FixLargePolices(terms, filter_type)
       for term in terms:
         if set(['established', 'tcp-established']).intersection(term.option):
-          logging.debug('Skipping established term %s ' +
-                        'because SRX is stateful.', term.name)
+          logging.debug('Skipping established term %s because SRX is stateful.',
+                        term.name)
           continue
         term.name = self.FixTermLength(term.name)
         if term.name in term_dup_check:
@@ -458,8 +463,8 @@ class JuniperSRX(aclgenerator.ACLGenerator):
                          'in less than two weeks.', term.name, self.from_zone,
                          self.to_zone)
           if term.expiration <= current_date:
-            logging.warn('WARNING: Term %s in policy %s>%s is expired.',
-                         term.name, self.from_zone, self.to_zone)
+            logging.warning('WARNING: Term %s in policy %s>%s is expired.',
+                            term.name, self.from_zone, self.to_zone)
             continue
 
         # SRX address books leverage network token names for IPs.
@@ -506,11 +511,34 @@ class JuniperSRX(aclgenerator.ACLGenerator):
                 term.source_address = ips
               if term.destination_address == ips:
                 term.destination_address = ips
-        for addr in term.source_address:
-          if addr.version in self._AF_MAP[filter_type]:
+
+        # Filter source_address based on filter_type & add to address book
+        if term.source_address:
+          valid_addrs = []
+          for addr in term.source_address:
+            if addr.version in self._AF_MAP[filter_type]:
+              valid_addrs.append(addr)
+          if not valid_addrs:
+            logging.warning(
+                'WARNING: Term %s has 0 valid source IPs, skipping.', term.name)
+            continue
+          term.source_address = valid_addrs
+          for addr in term.source_address:
             self._BuildAddressBook(self.from_zone, addr)
-        for addr in term.destination_address:
-          if addr.version in self._AF_MAP[filter_type]:
+
+        # Filter destination_address based on filter_type & add to address book
+        if term.destination_address:
+          valid_addrs = []
+          for addr in term.destination_address:
+            if addr.version in self._AF_MAP[filter_type]:
+              valid_addrs.append(addr)
+          if not valid_addrs:
+            logging.warning(
+                'WARNING: Term %s has 0 valid destination IPs, skipping.',
+                term.name)
+            continue
+          term.destination_address = valid_addrs
+          for addr in term.destination_address:
             self._BuildAddressBook(self.to_zone, addr)
 
         new_term = Term(term, self.from_zone, self.to_zone, self.expresspath,
@@ -593,7 +621,7 @@ class JuniperSRX(aclgenerator.ACLGenerator):
     for term in terms:
       if (term.AddressesByteLength(
           self._AF_MAP[address_family]) > self._ADDRESS_LENGTH_LIMIT):
-        logging.warn('LARGE TERM ENCOUNTERED')
+        logging.warning('LARGE TERM ENCOUNTERED')
         src_chunks = Chunks(term.source_address)
         counter = 0
         for chunk in src_chunks:
@@ -761,21 +789,44 @@ class JuniperSRX(aclgenerator.ACLGenerator):
       if app['protocol'] or app['sport'] or app['dport'] or app['icmp-type']:
         # generate ICMP statements
         if app['icmp-type']:
-          target.IndentAppend(1, 'application ' + app['name'] + '-app {')
-
           if app['timeout']:
             timeout = app['timeout']
           else:
             timeout = 60
+          # SRX has a limit of 8 terms per application. To get around this,
+          # we use application sets with applications that contain the terms
+          # we need.
+          num_terms = len(app['protocol']) * len(app['icmp-type'])
+          if num_terms > ICMP_TERM_LIMIT:
+            target.IndentAppend(1, 'application-set ' + app['name'] + '-app {')
+            for i in range(num_terms):
+              target.IndentAppend(
+                  2, 'application ' + app['name'] + '-app%d' % (i + 1) + ';')
+            target.IndentAppend(1, '}')
+          else:
+            target.IndentAppend(1, 'application ' + app['name'] + '-app {')
+
+          term_counter = 0
           for i, code in enumerate(app['icmp-type']):
             for proto in app['protocol']:
-              target.IndentAppend(
-                  2,
-                  'term t%d protocol %s %s-type %s inactivity-timeout %d;' %
-                  (i + 1, proto, proto, str(code), int(timeout))
-              )
-          target.IndentAppend(1, '}')
-
+              # if we have more than 8 (ICMP_TERM_LIMIT) terms, we use an app
+              # for each term.
+              if num_terms > ICMP_TERM_LIMIT:
+                target.IndentAppend(
+                    1, 'application ' + app['name'] + '-app%d' %
+                    (term_counter + 1) + ' {')
+                target.IndentAppend(
+                    2, 'term t1 protocol %s %s-type %s inactivity-timeout %d;' %
+                    (proto, proto, str(code), int(timeout)))
+                target.IndentAppend(1, '}')
+              else:
+                target.IndentAppend(
+                    2,
+                    'term t%d protocol %s %s-type %s inactivity-timeout %d;' %
+                    (i + 1, proto, proto, str(code), int(timeout)))
+              term_counter += 1
+          if num_terms < ICMP_TERM_LIMIT:
+            target.IndentAppend(1, '}')
         # generate non-ICMP statements
         else:
           i = 1

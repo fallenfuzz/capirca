@@ -21,8 +21,8 @@ from __future__ import unicode_literals
 
 import copy
 import datetime
+import re
 import unittest
-
 
 from capirca.lib import aclgenerator
 from capirca.lib import junipersrx
@@ -319,6 +319,14 @@ term good_term_20 {
   action:: accept
 }
 """
+GOOD_TERM_21 = """
+term good_term_21 {
+  destination-address:: UDON
+  destination-port:: HTTP
+  protocol:: tcp
+  action:: accept
+}
+"""
 
 GOOD_TERM_21 = """
 term good_term_21 {
@@ -380,6 +388,62 @@ term test-icmp {
 }
 """
 
+# For testing when the number of terms is at the 8 term application limit
+LONG_IPV6_ICMP_TERM = """
+term accept-icmpv6-types {
+  protocol:: icmpv6
+  icmp-type:: echo-request echo-reply neighbor-solicit
+  icmp-type:: neighbor-advertisement router-advertisement packet-too-big
+  icmp-type:: parameter-problem time-exceeded
+  action:: accept
+}
+"""
+
+# For testing when the number of terms goes over the 8 term application limit
+LONG_IPV6_ICMP_TERM2 = """
+term accept-icmpv6-types {
+  protocol:: icmpv6
+  icmp-type:: echo-request echo-reply neighbor-solicit
+  icmp-type:: neighbor-advertisement router-advertisement packet-too-big
+  icmp-type:: parameter-problem time-exceeded destination-unreachable
+  action:: accept
+}
+"""
+
+ICMP_ALL_TERM = """
+term accept-icmp-types {
+  protocol:: icmp
+  icmp-type:: echo-reply unreachable source-quench redirect alternate-address
+  icmp-type:: echo-request router-advertisement router-solicitation
+  icmp-type:: time-exceeded parameter-problem timestamp-request
+  icmp-type:: timestamp-reply information-request information-reply
+  icmp-type:: mask-request mask-reply conversion-error mobile-redirect
+  action:: accept
+}
+"""
+
+ICMP6_ALL_TERM = """
+term accept-icmpv6-types {
+  protocol:: icmpv6
+  icmp-type:: destination-unreachable packet-too-big time-exceeded
+  icmp-type:: parameter-problem echo-request echo-reply
+  icmp-type:: multicast-listener-query multicast-listener-report
+  icmp-type:: multicast-listener-done router-solicit router-advertisement
+  icmp-type:: neighbor-solicit neighbor-advertisement redirect-message
+  icmp-type:: router-renumbering icmp-node-information-query
+  icmp-type:: icmp-node-information-response
+  icmp-type:: inverse-neighbor-discovery-solicitation
+  icmp-type:: inverse-neighbor-discovery-advertisement
+  icmp-type:: version-2-multicast-listener-report
+  icmp-type:: home-agent-address-discovery-request
+  icmp-type:: home-agent-address-discovery-reply mobile-prefix-solicitation
+  icmp-type:: mobile-prefix-advertisement certification-path-solicitation
+  icmp-type:: certification-path-advertisement multicast-router-advertisement
+  icmp-type:: multicast-router-solicitation multicast-router-termination
+  action:: accept
+}
+"""
+
 IPV6_ICMP_TERM = """
 term test-ipv6_icmp {
   protocol:: icmpv6
@@ -423,6 +487,7 @@ term default-term-1 {
   action:: deny
 }
 """
+
 TIMEOUT_TERM = """
 term timeout-term {
   protocol:: icmp
@@ -523,24 +588,25 @@ _IPSET5 = [nacaddr.IP('10.0.0.0/24')]
 class JuniperSRXTest(unittest.TestCase):
 
   def setUp(self):
+    super(JuniperSRXTest, self).setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   def testHeaderComment(self):
     pol = policy.ParsePolicy(GOOD_HEADER + ICMP_TYPE_TERM_1, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('This is a test acl with a comment' in output, output)
+    self.assertIn('This is a test acl with a comment', output, output)
 
   def testHeaderApplyGroups(self):
     pol = policy.ParsePolicy(GOOD_HEADER_5 + ICMP_TYPE_TERM_1, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('apply-groups [ tcp-test1 tcp-test2 ]' in output,
-                    output)
+    self.assertIn('apply-groups [ tcp-test1 tcp-test2 ]', output,
+                  output)
 
   def testHeaderApplyGroupsExcept(self):
     pol = policy.ParsePolicy(GOOD_HEADER_6 + ICMP_TYPE_TERM_1, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('apply-groups-except [ tcp-test1 tcp-test2 ]' in output,
-                    output)
+    self.assertIn('apply-groups-except [ tcp-test1 tcp-test2 ]', output,
+                  output)
 
   def testLongComment(self):
     expected_output = """
@@ -553,7 +619,7 @@ class JuniperSRXTest(unittest.TestCase):
     srx = junipersrx.JuniperSRX(policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_1,
                                                    self.naming), EXP_INFO)
     output = str(srx)
-    self.failUnless(expected_output in output, output)
+    self.assertIn(expected_output, output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
@@ -565,7 +631,7 @@ class JuniperSRXTest(unittest.TestCase):
     srx = junipersrx.JuniperSRX(policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_1,
                                                    self.naming), EXP_INFO)
     output = str(srx)
-    self.failUnless('policy good-term-1 {' in output, output)
+    self.assertIn('policy good-term-1 {', output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
@@ -576,7 +642,7 @@ class JuniperSRXTest(unittest.TestCase):
     srx = junipersrx.JuniperSRX(policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_3,
                                                    self.naming), EXP_INFO)
     output = str(srx)
-    self.failUnless('ipsec-vpn good-vpn-3;' in output, output)
+    self.assertIn('ipsec-vpn good-vpn-3;', output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
 
@@ -586,8 +652,8 @@ class JuniperSRXTest(unittest.TestCase):
     srx = junipersrx.JuniperSRX(policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_4,
                                                    self.naming), EXP_INFO)
     output = str(srx)
-    self.failUnless('ipsec-vpn good-vpn-4;' in output, output)
-    self.failUnless('pair-policy policy-4;' in output, output)
+    self.assertIn('ipsec-vpn good-vpn-4;', output, output)
+    self.assertIn('pair-policy policy-4;', output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
 
@@ -597,8 +663,8 @@ class JuniperSRXTest(unittest.TestCase):
     srx = junipersrx.JuniperSRX(policy.ParsePolicy(GOOD_HEADER + BAD_TERM_1,
                                                    self.naming), EXP_INFO)
     output = str(srx)
-    self.failUnless('ipsec-vpn good-vpn-4;' not in output, output)
-    self.failUnless('pair-policy policy-4;' not in output, output)
+    self.assertNotIn('ipsec-vpn good-vpn-4;', output, output)
+    self.assertNotIn('pair-policy policy-4;', output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
 
@@ -606,17 +672,78 @@ class JuniperSRXTest(unittest.TestCase):
     srx = junipersrx.JuniperSRX(policy.ParsePolicy(GOOD_HEADER + DEFAULT_TERM_1,
                                                    self.naming), EXP_INFO)
     output = str(srx)
-    self.failUnless('deny;' in output, output)
+    self.assertIn('deny;', output, output)
 
   def testIcmpTypes(self):
     pol = policy.ParsePolicy(GOOD_HEADER + ICMP_TYPE_TERM_1, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('application test-icmp-app;' in output, output)
-    self.failUnless('application test-icmp-app {' in output, output)
-    self.failUnless('term t1 protocol icmp icmp-type 0 inactivity-timeout 60'
-                    in output, output)
-    self.failUnless('term t2 protocol icmp icmp-type 8 inactivity-timeout 60'
-                    in output, output)
+    self.assertIn('application test-icmp-app;', output, output)
+    self.assertIn('application test-icmp-app {', output, output)
+    self.assertIn('term t1 protocol icmp icmp-type 0 inactivity-timeout 60',
+                  output, output)
+    self.assertIn('term t2 protocol icmp icmp-type 8 inactivity-timeout 60',
+                  output, output)
+
+  def testLongIcmpTypes(self):
+    pol = policy.ParsePolicy(GOOD_HEADER + LONG_IPV6_ICMP_TERM, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+
+    # Make sure that the application isn't split into an application set
+    # due to ICMP term usage up to 8 terms.
+    self.assertNotIn('application-set accept-icmpv6-types-app', output)
+    self.assertIn('application accept-icmpv6-types-app;', output)
+
+    # Use regex to check for there being a single application with exactly 8
+    # terms in it.
+    pattern = re.compile(
+        r'application accept-icmpv6-types-app \{\s+(term t\d protocol icmp6 icmp6-type \d{1,3} inactivity-timeout 60;\s+){8}\}'
+    )
+    self.assertTrue(pattern.search(output), output)
+
+  def testLongSplitIcmpTypes(self):
+    pol = policy.ParsePolicy(GOOD_HEADER + LONG_IPV6_ICMP_TERM2, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+
+    # Check the application was split into a set of many applications; 9 terms.
+    pattern = re.compile(
+        r'application-set accept-icmpv6-types-app \{\s+(application accept-icmpv6-types-app\d;\s+){9}\}')
+    self.assertTrue(pattern.search(output), output)
+
+    # Check that each of the 9 applications with 1 term each.
+    pattern = re.compile(
+        r'(application accept-icmpv6-types-app\d \{\s+(term t1 protocol icmp6 icmp6-type \d{1,3} inactivity-timeout 60;\s+)\}\s+){9}'
+    )
+    self.assertTrue(pattern.search(output), output)
+
+  def testAllIcmpTypes(self):
+    pol = policy.ParsePolicy(GOOD_HEADER + ICMP_ALL_TERM, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+
+    # Check for split into application set of many applications; 18 terms.
+    pattern = re.compile(
+        r'application-set accept-icmp-types-app \{\s+(application accept-icmp-types-app\d{1,2};\s+){18}\}')
+    self.assertTrue(pattern.search(output), output)
+
+    # Check that each of the 18 applications have 1 term each.
+    pattern = re.compile(
+        r'(application accept-icmp-types-app\d{1,2} \{\s+(term t1 protocol icmp icmp-type \d{1,3} inactivity-timeout 60;\s+)\}\s+){18}'
+    )
+    self.assertTrue(pattern.search(output), output)
+
+  def testAllIcmp6Types(self):
+    pol = policy.ParsePolicy(GOOD_HEADER + ICMP6_ALL_TERM, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+    # Check for 29 applications.
+    pattern = re.compile(
+        r'application-set accept-icmpv6-types-app \{\s+(application accept-icmpv6-types-app\d{1,2};\s+){29}\}'
+    )
+    self.assertTrue(pattern.search(output), output)
+
+    # Check that each of the 4 applications have between 1 and 8 terms.
+    pattern = re.compile(
+        r'(application accept-icmpv6-types-app\d{1,2} \{\s+(term t1 protocol icmp6 icmp6-type \d{1,3} inactivity-timeout 60;\s+)\}\s+){29}'
+    )
+    self.assertTrue(pattern.search(output), output)
 
   def testLoggingBothAccept(self):
     srx = junipersrx.JuniperSRX(policy.ParsePolicy(GOOD_HEADER
@@ -653,9 +780,9 @@ class JuniperSRXTest(unittest.TestCase):
   def testOwnerTerm(self):
     pol = policy.ParsePolicy(GOOD_HEADER + OWNER_TERM, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('            /*\n'
-                    '            Owner: foo@google.com\n'
-                    '            */' in output, output)
+    self.assertIn('            /*\n'
+                  '            Owner: foo@google.com\n'
+                  '            */', output, output)
 
   def testBadICMP(self):
     pol = policy.ParsePolicy(GOOD_HEADER + BAD_ICMP_TERM_1, self.naming)
@@ -665,28 +792,28 @@ class JuniperSRXTest(unittest.TestCase):
   def testICMPProtocolOnly(self):
     pol = policy.ParsePolicy(GOOD_HEADER + ICMP_ONLY_TERM_1, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('protocol icmp;' in output, output)
+    self.assertIn('protocol icmp;', output, output)
 
   def testMultipleProtocolGrouping(self):
     pol = policy.ParsePolicy(GOOD_HEADER + MULTIPLE_PROTOCOLS_TERM, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('application-set multi-proto-app {' in output, output)
-    self.failUnless('application multi-proto-app1;' in output, output)
-    self.failUnless('application multi-proto-app2;' in output, output)
-    self.failUnless('application multi-proto-app3;' in output, output)
-    self.failUnless('application multi-proto-app1 {' in output, output)
-    self.failUnless('term t1 protocol tcp;' in output, output)
-    self.failUnless('application multi-proto-app2 {' in output, output)
-    self.failUnless('term t2 protocol udp;' in output, output)
-    self.failUnless('application multi-proto-app3 {' in output, output)
-    self.failUnless('term t3 protocol icmp;' in output, output)
+    self.assertIn('application-set multi-proto-app {', output, output)
+    self.assertIn('application multi-proto-app1;', output, output)
+    self.assertIn('application multi-proto-app2;', output, output)
+    self.assertIn('application multi-proto-app3;', output, output)
+    self.assertIn('application multi-proto-app1 {', output, output)
+    self.assertIn('term t1 protocol tcp;', output, output)
+    self.assertIn('application multi-proto-app2 {', output, output)
+    self.assertIn('term t2 protocol udp;', output, output)
+    self.assertIn('application multi-proto-app3 {', output, output)
+    self.assertIn('term t3 protocol icmp;', output, output)
 
   def testGlobalPolicyHeader(self):
     pol = policy.ParsePolicy(GOOD_HEADER_10 + MULTIPLE_PROTOCOLS_TERM,
                              self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
     self.assertEqual(output.count('global {'), 2)
-    self.assertFalse('from-zone all to-zone all {' in output)
+    self.assertNotIn('from-zone all to-zone all {', output)
 
   def testBadGlobalPolicyHeaderZoneBook(self):
     pol = policy.ParsePolicy(BAD_HEADER_3 + MULTIPLE_PROTOCOLS_TERM,
@@ -724,7 +851,7 @@ class JuniperSRXTest(unittest.TestCase):
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
 
-  @mock.patch.object(junipersrx.logging, 'warn')
+  @mock.patch.object(junipersrx.logging, 'warning')
   def testExpiredTerm(self, mock_warn):
     _ = junipersrx.JuniperSRX(policy.ParsePolicy(GOOD_HEADER + EXPIRED_TERM_1,
                                                  self.naming), EXP_INFO)
@@ -748,13 +875,13 @@ class JuniperSRXTest(unittest.TestCase):
   def testTimeout(self):
     pol = policy.ParsePolicy(GOOD_HEADER + TIMEOUT_TERM, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('timeout 77' in output, output)
+    self.assertIn('timeout 77', output, output)
 
   def testIcmpV6(self):
     pol = policy.ParsePolicy(GOOD_HEADER + IPV6_ICMP_TERM, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('protocol icmp6' in output, output)
-    self.failUnless('icmp6-type' in output, output)
+    self.assertIn('protocol icmp6', output, output)
+    self.assertIn('icmp6-type', output, output)
 
   def testReplaceStatement(self):
     self.naming.GetNetAddr.return_value = _IPSET
@@ -762,9 +889,9 @@ class JuniperSRXTest(unittest.TestCase):
 
     pol = policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_1, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('replace: address-book' in output, output)
-    self.failUnless('replace: policies' in output, output)
-    self.failUnless('replace: applications' in output, output)
+    self.assertIn('replace: address-book', output, output)
+    self.assertIn('replace: policies', output, output)
+    self.assertIn('replace: applications', output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
@@ -775,10 +902,10 @@ class JuniperSRXTest(unittest.TestCase):
 
     pol = policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_1, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('replace: address-book {' in output, output)
-    self.failUnless('global {' in output, output)
-    self.failUnless('2001:4860:8000::/33' in output, output)
-    self.failUnless('10.0.0.0/8' in output, output)
+    self.assertIn('replace: address-book {', output, output)
+    self.assertIn('global {', output, output)
+    self.assertIn('2001:4860:8000::/33', output, output)
+    self.assertIn('10.0.0.0/8', output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
@@ -789,10 +916,10 @@ class JuniperSRXTest(unittest.TestCase):
 
     pol = policy.ParsePolicy(GOOD_HEADER_3 + GOOD_TERM_1, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('replace: address-book {' in output, output)
-    self.failUnless('global {' in output, output)
-    self.failUnless('2001:4860:8000::/33' not in output, output)
-    self.failUnless('10.0.0.0/8' in output, output)
+    self.assertIn('replace: address-book {', output, output)
+    self.assertIn('global {', output, output)
+    self.assertNotIn('2001:4860:8000::/33', output, output)
+    self.assertIn('10.0.0.0/8', output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
@@ -803,10 +930,10 @@ class JuniperSRXTest(unittest.TestCase):
 
     pol = policy.ParsePolicy(GOOD_HEADER_4 + GOOD_TERM_1, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('replace: address-book {' in output, output)
-    self.failUnless('global {' in output, output)
-    self.failUnless('2001:4860:8000::/33' in output, output)
-    self.failUnless('10.0.0.0/8' not in output, output)
+    self.assertIn('replace: address-book {', output, output)
+    self.assertIn('global {', output, output)
+    self.assertIn('2001:4860:8000::/33', output, output)
+    self.assertNotIn('10.0.0.0/8', output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
@@ -821,7 +948,7 @@ class JuniperSRXTest(unittest.TestCase):
     pol = policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_1 + GOOD_HEADER_2 +
                              GOOD_TERM_12, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('address FOOBAR_0 10.23.0.0/22;' in output, output)
+    self.assertIn('address FOOBAR_0 10.23.0.0/22;', output, output)
 
     self.naming.GetNetAddr.assert_has_calls([
         mock.call('SOME_HOST'),
@@ -839,7 +966,7 @@ class JuniperSRXTest(unittest.TestCase):
     pol = policy.ParsePolicy(GOOD_HEADER_2 + GOOD_TERM_12 + GOOD_HEADER +
                              GOOD_TERM_1, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('address FOOBAR_0 10.23.0.0/22;' in output, output)
+    self.assertIn('address FOOBAR_0 10.23.0.0/22;', output, output)
 
     self.naming.GetNetAddr.assert_has_calls([
         mock.call('FOOBAR'),
@@ -853,10 +980,10 @@ class JuniperSRXTest(unittest.TestCase):
 
     pol = policy.ParsePolicy(GOOD_HEADER_9 + GOOD_TERM_1, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('security-zone untrust {' in output, output)
-    self.failUnless('replace: address-book {' in output, output)
-    self.failUnless('2001:4860:8000::/33' in output, output)
-    self.failUnless('10.0.0.0/8' in output, output)
+    self.assertIn('security-zone untrust {', output, output)
+    self.assertIn('replace: address-book {', output, output)
+    self.assertIn('2001:4860:8000::/33', output, output)
+    self.assertIn('10.0.0.0/8', output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
@@ -867,10 +994,10 @@ class JuniperSRXTest(unittest.TestCase):
 
     pol = policy.ParsePolicy(GOOD_HEADER_7 + GOOD_TERM_1, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('security-zone untrust {' in output, output)
-    self.failUnless('replace: address-book {' in output, output)
-    self.failUnless('2001:4860:8000::/33' not in output, output)
-    self.failUnless('10.0.0.0/8' in output, output)
+    self.assertIn('security-zone untrust {', output, output)
+    self.assertIn('replace: address-book {', output, output)
+    self.assertNotIn('2001:4860:8000::/33', output, output)
+    self.assertIn('10.0.0.0/8', output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
@@ -881,15 +1008,15 @@ class JuniperSRXTest(unittest.TestCase):
 
     pol = policy.ParsePolicy(GOOD_HEADER_8 + GOOD_TERM_1, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('security-zone untrust {' in output, output)
-    self.failUnless('replace: address-book {' in output, output)
-    self.failUnless('2001:4860:8000::/33' in output, output)
-    self.failUnless('10.0.0.0/8' not in output, output)
+    self.assertIn('security-zone untrust {', output, output)
+    self.assertIn('replace: address-book {', output, output)
+    self.assertIn('2001:4860:8000::/33', output, output)
+    self.assertNotIn('10.0.0.0/8', output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
 
-  def _FailIfUnorderedAddressBook(self, address_book):
+  def assertFalseUnorderedAddressBook(self, address_book):
     # This is very naive check that expects addresses to be exact as returned
     # from _OutOfOrderAddresses method. If you modify one please modify this one
     # as well.
@@ -914,7 +1041,7 @@ class JuniperSRXTest(unittest.TestCase):
     pol = policy.ParsePolicy(GOOD_HEADER_3 + GOOD_TERM_2, self.naming)
     p = junipersrx.JuniperSRX(pol, EXP_INFO)
 
-    self._FailIfUnorderedAddressBook(p._GenerateAddressBook())
+    self.assertFalseUnorderedAddressBook(p._GenerateAddressBook())
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
@@ -927,7 +1054,7 @@ class JuniperSRXTest(unittest.TestCase):
     pol = policy.ParsePolicy(GOOD_HEADER_3 + GOOD_TERM_2, self.naming)
     p = junipersrx.JuniperSRX(pol, EXP_INFO)
 
-    self._FailIfUnorderedAddressBook(p._GenerateAddressBook())
+    self.assertFalseUnorderedAddressBook(p._GenerateAddressBook())
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
@@ -958,9 +1085,9 @@ class JuniperSRXTest(unittest.TestCase):
                        'application-set good-term-2-app'])
 
     self.naming.GetNetAddr.assert_has_calls(
-            [mock.call('SOME_HOST')] * 2)
+        [mock.call('SOME_HOST')] * 2)
     self.naming.GetServiceByProto.assert_has_calls(
-            [mock.call('SMTP', 'tcp')] * 2)
+        [mock.call('SMTP', 'tcp')] * 2)
 
   def testApplicationsOrderingAlreadyOrdered(self):
     self.naming.GetNetAddr.return_value = _IPSET
@@ -976,16 +1103,16 @@ class JuniperSRXTest(unittest.TestCase):
                        'application-set good-term-2-app'])
 
     self.naming.GetNetAddr.assert_has_calls(
-            [mock.call('SOME_HOST')] * 2)
+        [mock.call('SOME_HOST')] * 2)
     self.naming.GetServiceByProto.assert_has_calls(
-            [mock.call('SMTP', 'tcp')] * 2)
+        [mock.call('SMTP', 'tcp')] * 2)
 
   def testDscpWithByte(self):
     self.naming.GetNetAddr.return_value = [nacaddr.IP('10.0.0.0/8')]
     srx = junipersrx.JuniperSRX(policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_10,
                                                    self.naming), EXP_INFO)
     output = str(srx)
-    self.failUnless('dscp b111000;' in output, output)
+    self.assertIn('dscp b111000;', output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
 
@@ -995,9 +1122,9 @@ class JuniperSRXTest(unittest.TestCase):
     srx = junipersrx.JuniperSRX(policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_11,
                                                    self.naming), EXP_INFO)
     output = str(srx)
-    self.failUnless('dscp af42;' in output, output)
-    self.failUnless('dscp [ af41-af42 5 ];' in output, output)
-    self.failUnless('dscp-except [ be ];' in output, output)
+    self.assertIn('dscp af42;', output, output)
+    self.assertIn('dscp [ af41-af42 5 ];', output, output)
+    self.assertIn('dscp-except [ be ];', output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
 
@@ -1006,7 +1133,7 @@ class JuniperSRXTest(unittest.TestCase):
     mo_ips = []
     counter = 0
     for ip in ips:
-      if counter%2 == 0:
+      if counter % 2 == 0:
         mo_ips.append(nacaddr.IP(ip))
       counter += 1
 
@@ -1014,7 +1141,7 @@ class JuniperSRXTest(unittest.TestCase):
     prodcolos_ips = []
     counter = 0
     for ip in ips:
-      if counter%2 == 0:
+      if counter % 2 == 0:
         prodcolos_ips.append(nacaddr.IP(ip))
       counter += 1
 
@@ -1032,20 +1159,20 @@ class JuniperSRXTest(unittest.TestCase):
 
   def testLargeTermSplittingV6(self):
     ips = list(nacaddr.IP('2620:0:1000:3103:eca0:2c09:6b32:e000/119'
-                         ).subnets(new_prefix=128))
+                          ).subnets(new_prefix=128))
     mo_ips = []
     counter = 0
     for ip in ips:
-      if counter%2 == 0:
+      if counter % 2 == 0:
         mo_ips.append(nacaddr.IP(ip))
       counter += 1
 
     ips = list(nacaddr.IP('2720:0:1000:3103:eca0:2c09:6b32:e000/119'
-                         ).subnets(new_prefix=128))
+                          ).subnets(new_prefix=128))
     prodcolos_ips = []
     counter = 0
     for ip in ips:
-      if counter%2 == 0:
+      if counter % 2 == 0:
         prodcolos_ips.append(nacaddr.IP(ip))
       counter += 1
 
@@ -1063,21 +1190,21 @@ class JuniperSRXTest(unittest.TestCase):
 
   def testLargeTermSplitIgnoreV6(self):
     ips = list(nacaddr.IP('2620:0:1000:3103:eca0:2c09:6b32:e000/119'
-                         ).subnets(new_prefix=128))
+                          ).subnets(new_prefix=128))
     mo_ips = []
     counter = 0
     for ip in ips:
-      if counter%2 == 0:
+      if counter % 2 == 0:
         mo_ips.append(nacaddr.IP(ip))
       counter += 1
 
     ips = list(nacaddr.IP('2720:0:1000:3103:eca0:2c09:6b32:e000/119'
-                         ).subnets(new_prefix=128))
+                          ).subnets(new_prefix=128))
     ips.append(nacaddr.IPv4('10.0.0.1/32'))
     prodcolos_ips = []
     counter = 0
     for ip in ips:
-      if counter%2 == 0:
+      if counter % 2 == 0:
         prodcolos_ips.append(nacaddr.IP(ip))
       counter += 1
 
@@ -1107,8 +1234,8 @@ class JuniperSRXTest(unittest.TestCase):
     pol1 = junipersrx.JuniperSRX(policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_2,
                                                     self.naming), EXP_INFO)
     st, sst = pol1._BuildTokens()
-    self.assertEquals(st, SUPPORTED_TOKENS)
-    self.assertEquals(sst, SUPPORTED_SUB_TOKENS)
+    self.assertEqual(st, SUPPORTED_TOKENS)
+    self.assertEqual(sst, SUPPORTED_SUB_TOKENS)
 
   def testBuildWarningTokens(self):
     self.naming.GetServiceByProto.side_effect = [['25'], ['26']]
@@ -1116,8 +1243,8 @@ class JuniperSRXTest(unittest.TestCase):
     pol1 = junipersrx.JuniperSRX(policy.ParsePolicy(
         GOOD_HEADER + GOOD_TERM_15, self.naming), EXP_INFO)
     st, sst = pol1._BuildTokens()
-    self.assertEquals(st, SUPPORTED_TOKENS)
-    self.assertEquals(sst, SUPPORTED_SUB_TOKENS)
+    self.assertEqual(st, SUPPORTED_TOKENS)
+    self.assertEqual(sst, SUPPORTED_SUB_TOKENS)
 
   def testOptimizedGlobalAddressBook(self):
     foobar_ips = [nacaddr.IP('172.16.0.0/16', token='FOOBAR'),
@@ -1145,54 +1272,54 @@ class JuniperSRXTest(unittest.TestCase):
     pol = policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_17 + GOOD_HEADER_2 +
                              GOOD_TERM_15, self.naming)
     srx = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('address FOOBAR_0 172.16.0.0/14' in srx, srx)
-    self.failUnless('address FOOBAR_1 172.22.0.0/15;' in srx, srx)
-    self.failUnless('address FOOBAR_2 172.24.0.0/13;' in srx, srx)
-    self.failUnless('address SOME_HOST_0 10.0.0.0/8;' in srx, srx)
-    self.failUnless('address SOME_HOST_1 172.20.0.0/15;' in srx, srx)
-    self.failUnless('/16' not in srx, srx)
+    self.assertIn('address FOOBAR_0 172.16.0.0/14', srx, srx)
+    self.assertIn('address FOOBAR_1 172.22.0.0/15;', srx, srx)
+    self.assertIn('address FOOBAR_2 172.24.0.0/13;', srx, srx)
+    self.assertIn('address SOME_HOST_0 10.0.0.0/8;', srx, srx)
+    self.assertIn('address SOME_HOST_1 172.20.0.0/15;', srx, srx)
+    self.assertNotIn('/16', srx, srx)
 
   def testNakedExclude(self):
-    SMALL = [nacaddr.IP('10.0.0.0/24', 'SMALL', 'SMALL')]
-    self.naming.GetNetAddr.side_effect = [SMALL]
+    small = [nacaddr.IP('10.0.0.0/24', 'SMALL', 'SMALL')]
+    self.naming.GetNetAddr.side_effect = [small]
 
     pol = policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_18, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless(
-        'address GOOD_TERM_18_SRC_EXCLUDE_2 10.0.1.0/24;' in output, output)
-    self.failUnless(
-        'address GOOD_TERM_18_SRC_EXCLUDE_3 10.0.2.0/23;' in output, output)
-    self.failUnless(
-        'address GOOD_TERM_18_SRC_EXCLUDE_4 10.0.4.0/22;' in output, output)
-    self.failUnless(
-        'address GOOD_TERM_18_SRC_EXCLUDE_5 10.0.8.0/21;' in output, output)
-    self.assertFalse('10.0.0.0' in output)
+    self.assertIn(
+        'address GOOD_TERM_18_SRC_EXCLUDE_2 10.0.1.0/24;', output, output)
+    self.assertIn(
+        'address GOOD_TERM_18_SRC_EXCLUDE_3 10.0.2.0/23;', output, output)
+    self.assertIn(
+        'address GOOD_TERM_18_SRC_EXCLUDE_4 10.0.4.0/22;', output, output)
+    self.assertIn(
+        'address GOOD_TERM_18_SRC_EXCLUDE_5 10.0.8.0/21;', output, output)
+    self.assertNotIn('10.0.0.0', output)
 
   def testSourceExclude(self):
-    LARGE = [nacaddr.IP('10.0.0.0/20', 'LARGE', 'LARGE')]
-    SMALL = [nacaddr.IP('10.0.0.0/24', 'SMALL', 'SMALL')]
-    self.naming.GetNetAddr.side_effect = [LARGE, SMALL]
+    large = [nacaddr.IP('10.0.0.0/20', 'LARGE', 'LARGE')]
+    small = [nacaddr.IP('10.0.0.0/24', 'SMALL', 'SMALL')]
+    self.naming.GetNetAddr.side_effect = [large, small]
 
     pol = policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_19, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless(
-        'address GOOD_TERM_19_SRC_EXCLUDE_0 10.0.1.0/24;' in output, output)
-    self.failUnless(
-        'address GOOD_TERM_19_SRC_EXCLUDE_1 10.0.2.0/23;' in output, output)
-    self.failUnless(
-        'address GOOD_TERM_19_SRC_EXCLUDE_2 10.0.4.0/22;' in output, output)
-    self.failUnless(
-        'address GOOD_TERM_19_SRC_EXCLUDE_3 10.0.8.0/21;' in output, output)
-    self.assertFalse('10.0.0.0/24' in output)
+    self.assertIn(
+        'address GOOD_TERM_19_SRC_EXCLUDE_0 10.0.1.0/24;', output, output)
+    self.assertIn(
+        'address GOOD_TERM_19_SRC_EXCLUDE_1 10.0.2.0/23;', output, output)
+    self.assertIn(
+        'address GOOD_TERM_19_SRC_EXCLUDE_2 10.0.4.0/22;', output, output)
+    self.assertIn(
+        'address GOOD_TERM_19_SRC_EXCLUDE_3 10.0.8.0/21;', output, output)
+    self.assertNotIn('10.0.0.0/24', output)
 
   def testMixedVersionIcmp(self):
     pol = policy.ParsePolicy(GOOD_HEADER + ICMP_TYPE_TERM_1 + IPV6_ICMP_TERM,
                              self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failUnless('term t6 protocol icmp6 icmp6-type 129 '
-                    'inactivity-timeout 60;' in output)
-    self.failUnless('term t1 protocol icmp icmp-type 0 '
-                    'inactivity-timeout 60;' in output)
+    self.assertIn('term t6 protocol icmp6 icmp6-type 129 '
+                  'inactivity-timeout 60;', output)
+    self.assertIn('term t1 protocol icmp icmp-type 0 '
+                  'inactivity-timeout 60;', output)
 
   def testOptimizedApplicationset(self):
     some_host = [nacaddr.IP('10.0.0.1/32', token='SOMEHOST')]
@@ -1208,7 +1335,7 @@ class JuniperSRXTest(unittest.TestCase):
                              GOOD_TERM_12 + GOOD_HEADER_2 + GOOD_TERM_14,
                              self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
-    self.failIf('dup-of-term-1-app' in output)
+    self.assertNotIn('dup-of-term-1-app', output)
 
   def testExpressPath(self):
     some_host = [nacaddr.IP('10.0.0.1/32', token='SOMEHOST')]
@@ -1245,6 +1372,436 @@ class JuniperSRXTest(unittest.TestCase):
     self.assertNotIn('This is a test acl with a comment', str(srx))
     self.assertNotIn('very very very', str(srx))
 
+  def testDropUndefinedAddressbookTermsV4ForV6Render(self):
+    # V4-only term should be dropped when rendering ACL as V6 - b/172933068
+    udon = [nacaddr.IP('10.0.0.2/32', token='UDON')]
+    self.naming.GetServiceByProto.side_effect = [['25', '25']]
+    self.naming.GetNetAddr.side_effect = [udon]
+
+    # GOOD_HEADER_4 specifies V6 rendering
+    pol = policy.ParsePolicy(GOOD_HEADER_4 + GOOD_TERM_21, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+    self.assertNotIn('good_term_21', output)
+
+  def testDeleteV4AddressEntriesForV6Render(self):
+    # Confirm V4 address book entries are not generated when rendering as V6
+    udon = [nacaddr.IP('10.0.0.2/32', token='UDON')]
+    self.naming.GetServiceByProto.side_effect = [['25', '25']]
+    self.naming.GetNetAddr.side_effect = [udon]
+
+    # GOOD_HEADER_4 specifies V6 rendering
+    pol = policy.ParsePolicy(GOOD_HEADER_4 + GOOD_TERM_21, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+    self.assertNotIn('10.0.0.2/32', output)
+
+  def testDropUndefinedAddressbookTermsV6ForV4Render(self):
+    # V6-only term should be dropped when rendering ACL as V4 - b/172933068
+    udon = [nacaddr.IP('2001:4860:8000::5/128', token='UDON')]
+    self.naming.GetServiceByProto.side_effect = [['25', '25']]
+    self.naming.GetNetAddr.side_effect = [udon]
+
+    # GOOD_HEADER_3 specifies V4 rendering
+    pol = policy.ParsePolicy(GOOD_HEADER_3 + GOOD_TERM_21, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+    self.assertNotIn('good_term_21', output)
+
+  def testDeleteV6AddressEntriesForV4Render(self):
+    # Confirm V6 address book entries are not generated when rendering as V4
+    udon = [nacaddr.IP('2001:4860:8000::5/128', token='UDON')]
+    self.naming.GetServiceByProto.side_effect = [['25', '25']]
+    self.naming.GetNetAddr.side_effect = [udon]
+
+    # GOOD_HEADER_3 specifies V4 rendering
+    pol = policy.ParsePolicy(GOOD_HEADER_3 + GOOD_TERM_21, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+    self.assertNotIn('2001:4860:8000::5/128', output)
+
+  def testCreateV6AddressEntriesForMixedRender(self):
+    # V6-only 1024+ IPs; MIXED rendering
+    # Confirm that address set names used in policy are also created in
+    # address book
+
+    # TODO(nitb) Move multiple IP networks generation logic to separate method
+    # and reuse in other tests
+    overflow_ips = [
+        nacaddr.IP('2001:4860:8000::5/128'),
+        nacaddr.IP('3051:abd2:5400::9/128'),
+        nacaddr.IP('aee2:37ba:3cc0::3/128'),
+        nacaddr.IP('6f5d:abd2:1403::1/128'),
+        nacaddr.IP('577e:5400:3051::6/128'),
+        nacaddr.IP('af22:32d2:3f00::2/128')
+    ]
+
+    ips = list(
+        nacaddr.IP('2620:0:1000:3103:eca0:2c09:6b32:e000/117').subnets(
+            new_prefix=128))
+    mo_ips = []
+    counter = 0
+    for ip in ips:
+      if counter % 2 == 0:
+        mo_ips.append(nacaddr.IP(ip))
+      counter += 1
+
+    self.naming.GetServiceByProto.side_effect = [['25', '25']]
+    self.naming.GetNetAddr.side_effect = [overflow_ips+mo_ips]
+
+    # GOOD_HEADER = MIXED rendering
+    pol = policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_21, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+
+    # extract address-set-names referenced in policy blocks
+    partial_pruned_acl = output.split('replace: policies')[1].split(
+        'destination-address [ ')[1:]
+
+    # verify that there are exactly 9 terms in the ACL by checking if
+    # partial_pruned_acl contains exactly 9 elements
+    self.assertEqual(len(partial_pruned_acl), 9)
+
+    for text in partial_pruned_acl:
+      address_set_name = text.split(' ];')[0]
+
+      if address_set_name:
+        address_set_count = output.count(address_set_name)
+        # check if each addresssetname referenced in policy occurs more than
+        # once i.e. is defined in the address book
+        self.assertGreater(address_set_count, 1)
+
+  def testCreateV6AddressEntriesForV6Render(self):
+    # V6-only 1024+ IPs; V6 rendering
+    overflow_ips = [
+        nacaddr.IP('2001:4860:8000::5/128'),
+        nacaddr.IP('3051:abd2:5400::9/128'),
+        nacaddr.IP('aee2:37ba:3cc0::3/128'),
+        nacaddr.IP('6f5d:abd2:1403::1/128'),
+        nacaddr.IP('577e:5400:3051::6/128'),
+        nacaddr.IP('af22:32d2:3f00::2/128')
+    ]
+
+    ips = list(
+        nacaddr.IP('2620:0:1000:3103:eca0:2c09:6b32:e000/117').subnets(
+            new_prefix=128))
+    mo_ips = []
+    counter = 0
+    for ip in ips:
+      if counter % 2 == 0:
+        mo_ips.append(nacaddr.IP(ip))
+      counter += 1
+
+    self.naming.GetServiceByProto.side_effect = [['25', '25']]
+    self.naming.GetNetAddr.side_effect = [overflow_ips+mo_ips]
+
+    # GOOD_HEADER_4 = V6 rendering
+    pol = policy.ParsePolicy(GOOD_HEADER_4 + GOOD_TERM_21, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+
+    # extract address-set-names referenced in policy blocks
+    partial_pruned_acl = output.split('replace: policies')[1].split(
+        'destination-address [ ')[1:]
+
+    # verify that there are exactly 9 terms in the ACL by checking if
+    # partial_pruned_acl contains exactly 9 elements
+    self.assertEqual(len(partial_pruned_acl), 9)
+
+    for text in partial_pruned_acl:
+      address_set_name = text.split(' ];')[0]
+
+      if address_set_name:
+        address_set_count = output.count(address_set_name)
+        # check if each addresssetname referenced in policy occurs more than
+        # once i.e. is defined in the address book
+        self.assertGreater(address_set_count, 1)
+
+  def testEmptyACLEmptyAddressBookV6IpsV4Render(self):
+    # V6-only 1024+ IPs; V4 rendering
+    overflow_ips = [
+        nacaddr.IP('2001:4860:8000::5/128'),
+        nacaddr.IP('3051:abd2:5400::9/128'),
+        nacaddr.IP('aee2:37ba:3cc0::3/128'),
+        nacaddr.IP('6f5d:abd2:1403::1/128'),
+        nacaddr.IP('577e:5400:3051::6/128'),
+        nacaddr.IP('af22:32d2:3f00::2/128')
+    ]
+
+    ips = list(
+        nacaddr.IP('2620:0:1000:3103:eca0:2c09:6b32:e000/117').subnets(
+            new_prefix=128))
+    mo_ips = []
+    counter = 0
+    for ip in ips:
+      if counter % 2 == 0:
+        mo_ips.append(nacaddr.IP(ip))
+      counter += 1
+
+    self.naming.GetServiceByProto.side_effect = [['25', '25']]
+    self.naming.GetNetAddr.side_effect = [overflow_ips+mo_ips]
+
+    # GOOD_HEADER_3 = V4 rendering
+    pol = policy.ParsePolicy(GOOD_HEADER_3 + GOOD_TERM_21, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+    address_set_count = output.count('address')
+
+    # verify acl is empty
+    self.assertNotIn('policy', output)
+
+    # verify address book is empty
+    self.assertEqual(address_set_count, 1)
+
+  def testCreateV4AddressEntriesForMixedRender(self):
+    # V4-only 1024+ IPs; MIXED rendering
+    overflow_ips = [
+        nacaddr.IP('23.2.3.3/32'),
+        nacaddr.IP('54.2.3.4/32'),
+        nacaddr.IP('76.2.3.5/32'),
+        nacaddr.IP('132.2.3.6/32'),
+        nacaddr.IP('197.2.3.7/32')
+    ]
+
+    ips = list(nacaddr.IP('10.0.8.0/21').subnets(new_prefix=32))
+    mo_ips = []
+    counter = 0
+    for ip in ips:
+      if counter % 2 == 0:
+        mo_ips.append(nacaddr.IP(ip))
+      counter += 1
+
+    self.naming.GetServiceByProto.side_effect = [['25', '25']]
+    self.naming.GetNetAddr.side_effect = [overflow_ips+mo_ips]
+
+    # GOOD_HEADER = MIXED rendering
+    pol = policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_21, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+
+    # extract address-set-names referenced in policy blocks
+    partial_pruned_acl = output.split('replace: policies')[1].split(
+        'destination-address [ ')[1:]
+
+    # verify that there are exactly 3 terms in the ACL by checking if
+    # partial_pruned_acl contains exactly 3 elements
+    self.assertEqual(len(partial_pruned_acl), 3)
+
+    for text in partial_pruned_acl:
+      address_set_name = text.split(' ];')[0]
+
+      if address_set_name:
+        address_set_count = output.count(address_set_name)
+        # check if each addresssetname referenced in policy occurs more than
+        # once i.e. is defined in the address book
+        self.assertGreater(address_set_count, 1)
+
+  def testEmptyACLEmptyAddressBookV4IpsV6Render(self):
+    # V4-only 1024+ IPs; V6 rendering
+    overflow_ips = [
+        nacaddr.IP('23.2.3.3/32'),
+        nacaddr.IP('54.2.3.4/32'),
+        nacaddr.IP('76.2.3.5/32'),
+        nacaddr.IP('132.2.3.6/32'),
+        nacaddr.IP('197.2.3.7/32')
+    ]
+
+    ips = list(nacaddr.IP('10.0.8.0/21').subnets(new_prefix=32))
+    mo_ips = []
+    counter = 0
+    for ip in ips:
+      if counter % 2 == 0:
+        mo_ips.append(nacaddr.IP(ip))
+      counter += 1
+
+    self.naming.GetServiceByProto.side_effect = [['25', '25']]
+    self.naming.GetNetAddr.side_effect = [overflow_ips+mo_ips]
+
+    # GOOD_HEADER_4 = V6 rendering
+    pol = policy.ParsePolicy(GOOD_HEADER_4 + GOOD_TERM_21, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+    address_set_count = output.count('address')
+
+    # verify acl is empty
+    self.assertNotIn('policy', output)
+
+    # verify address book is empty
+    self.assertEqual(address_set_count, 1)
+
+  def testCreateV4AddressEntriesForV4Render(self):
+    # V4-only 1024+ IPs; V4 rendering
+    overflow_ips = [
+        nacaddr.IP('23.2.3.3/32'),
+        nacaddr.IP('54.2.3.4/32'),
+        nacaddr.IP('76.2.3.5/32'),
+        nacaddr.IP('132.2.3.6/32'),
+        nacaddr.IP('197.2.3.7/32')
+    ]
+
+    ips = list(nacaddr.IP('10.0.8.0/21').subnets(new_prefix=32))
+    mo_ips = []
+    counter = 0
+    for ip in ips:
+      if counter % 2 == 0:
+        mo_ips.append(nacaddr.IP(ip))
+      counter += 1
+
+    self.naming.GetServiceByProto.side_effect = [['25', '25']]
+    self.naming.GetNetAddr.side_effect = [overflow_ips+mo_ips]
+
+    # GOOD_HEADER_3 = V4 rendering
+    pol = policy.ParsePolicy(GOOD_HEADER_3 + GOOD_TERM_21, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+
+    # extract address-set-names referenced in policy blocks
+    partial_pruned_acl = output.split('replace: policies')[1].split(
+        'destination-address [ ')[1:]
+
+    # verify that there are exactly 3 terms in the ACL by checking if
+    # partial_pruned_acl contains exactly 3 elements
+    self.assertEqual(len(partial_pruned_acl), 3)
+
+    for text in partial_pruned_acl:
+      address_set_name = text.split(' ];')[0]
+
+      if address_set_name:
+        address_set_count = output.count(address_set_name)
+        # check if each addresssetname referenced in policy occurs more than
+        # once i.e. is defined in the address book
+        self.assertGreater(address_set_count, 1)
+
+  def testCreateMixedAddressEntriesForMixedRender(self):
+    # 513V6 and 512V4 IPs; MIXED rendering
+    overflow_ips = [
+        nacaddr.IP('2001:4860:8000::5/128')
+    ]
+
+    ips = list(nacaddr.IP('10.0.8.0/22').subnets(new_prefix=32))
+    v4_ips = []
+    counter = 0
+    for ip in ips:
+      if counter % 2 == 0:
+        v4_ips.append(nacaddr.IP(ip))
+      counter += 1
+
+    ips = list(
+        nacaddr.IP('2620:0:1000:3103:eca0:2c09:6b32:e000/118').subnets(
+            new_prefix=128))
+    v6_ips = []
+    counter = 0
+    for ip in ips:
+      if counter % 2 == 0:
+        v6_ips.append(nacaddr.IP(ip))
+      counter += 1
+
+    self.naming.GetServiceByProto.side_effect = [['25', '25']]
+    self.naming.GetNetAddr.side_effect = [overflow_ips + v4_ips + v6_ips]
+
+    # GOOD_HEADER = MIXED rendering
+    pol = policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_21, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+
+    # extract address-set-names referenced in policy blocks
+    partial_pruned_acl = output.split('replace: policies')[1].split(
+        'destination-address [ ')[1:]
+
+    # verify that there are exactly 6 terms in the ACL by checking if
+    # partial_pruned_acl contains exactly 6 elements
+    self.assertEqual(len(partial_pruned_acl), 6)
+
+    for text in partial_pruned_acl:
+      address_set_name = text.split(' ];')[0]
+
+      if address_set_name:
+        address_set_count = output.count(address_set_name)
+        # check if each addresssetname referenced in policy occurs more than
+        # once i.e. is defined in the address book
+        self.assertGreater(address_set_count, 1)
+
+  def testCreateV6AddressEntriesForV6Render2(self):
+    # 513V6 and 512V4 IPs; V6 rendering
+    overflow_ips = [
+        nacaddr.IP('2001:4860:8000::5/128')
+    ]
+
+    ips = list(nacaddr.IP('10.0.8.0/22').subnets(new_prefix=32))
+    v4_ips = []
+    counter = 0
+    for ip in ips:
+      if counter % 2 == 0:
+        v4_ips.append(nacaddr.IP(ip))
+      counter += 1
+
+    ips = list(nacaddr.IP('2620:0:1000:3103:eca0:2c09:6b32:e000/118').subnets(new_prefix=128))
+    v6_ips = []
+    counter = 0
+    for ip in ips:
+      if counter % 2 == 0:
+        v6_ips.append(nacaddr.IP(ip))
+      counter += 1
+
+    self.naming.GetServiceByProto.side_effect = [['25', '25']]
+    self.naming.GetNetAddr.side_effect = [overflow_ips + v4_ips + v6_ips]
+
+    # GOOD_HEADER_4 = V6 rendering
+    pol = policy.ParsePolicy(GOOD_HEADER_4 + GOOD_TERM_21, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+
+    # extract address-set-names referenced in policy blocks
+    partial_pruned_acl = output.split('replace: policies')[1].split(
+        'destination-address [ ')[1:]
+
+    # verify that there are exactly 5 terms in the ACL by checking if
+    # partial_pruned_acl contains exactly 5 elements
+    self.assertEqual(len(partial_pruned_acl), 5)
+
+    for text in partial_pruned_acl:
+      address_set_name = text.split(' ];')[0]
+
+      if address_set_name:
+        address_set_count = output.count(address_set_name)
+        # check if each addresssetname referenced in policy occurs more than
+        # once i.e. is defined in the address book
+        self.assertGreater(address_set_count, 1)
+
+  def testCreateV4AddressEntriesForV4Render2(self):
+    # 513V6 and 512V4 IPs; V4 rendering
+    overflow_ips = [
+        nacaddr.IP('2001:4860:8000::5/128')
+    ]
+
+    ips = list(nacaddr.IP('10.0.8.0/22').subnets(new_prefix=32))
+    v4_ips = []
+    counter = 0
+    for ip in ips:
+      if counter % 2 == 0:
+        v4_ips.append(nacaddr.IP(ip))
+      counter += 1
+
+    ips = list(nacaddr.IP('2620:0:1000:3103:eca0:2c09:6b32:e000/118').subnets(new_prefix=128))
+    v6_ips = []
+    counter = 0
+    for ip in ips:
+      if counter % 2 == 0:
+        v6_ips.append(nacaddr.IP(ip))
+      counter += 1
+
+    self.naming.GetServiceByProto.side_effect = [['25', '25']]
+    self.naming.GetNetAddr.side_effect = [overflow_ips + v4_ips + v6_ips]
+
+    # GOOD_HEADER_3 = V4 rendering
+    pol = policy.ParsePolicy(GOOD_HEADER_3 + GOOD_TERM_21, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+
+    # extract address-set-names referenced in policy blocks
+
+    partial_pruned_acl = output.split('replace: policies')[1].split(
+        'destination-address [ ')[1:]
+
+    # verify that there is only one term in the ACL by checking if
+    # partial_pruned_acl contains only one element
+    self.assertEqual(len(partial_pruned_acl), 1)
+
+    for text in partial_pruned_acl:
+      address_set_name = text.split(' ];')[0]
+
+      if address_set_name:
+        address_set_count = output.count(address_set_name)
+        # check if each addresssetname referenced in policy occurs more than
+        # once i.e. is defined in the address book
+        self.assertGreater(address_set_count, 1)
 
 if __name__ == '__main__':
   unittest.main()

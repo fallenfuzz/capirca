@@ -53,10 +53,10 @@ import glob
 import os
 import re
 
+from absl import logging
+
 from capirca.lib import nacaddr
 from capirca.lib import port as portlib
-
-
 
 
 class Error(Exception):
@@ -91,7 +91,7 @@ class UndefinedPortError(Error):
   """Raised if a port/protocol pair has not been defined."""
 
 
-class UnexpectedDefinitionType(Error):
+class UnexpectedDefinitionTypeError(Error):
   """An unexpected/unknown definition type was used."""
 
 
@@ -122,6 +122,9 @@ class Naming(object):
      current_symbol: The current token being handled while parsing data.
      services: A collection of all of the current service item tokens.
      networks: A collection of all the current network item tokens.
+     unseen_services: Undefined service entries.
+     unseen_networks: Undefined network entries.
+     port_re: Regular Expression matching valid port entries.
   """
 
   def __init__(self, naming_dir=None, naming_file=None, naming_type=None):
@@ -132,11 +135,12 @@ class Naming(object):
     self.unseen_services = {}
     self.unseen_networks = {}
     self.port_re = re.compile(r'(^\d+-\d+|^\d+)\/\w+$|^[\w\d-]+$',
-                              re.IGNORECASE|re.DOTALL)
+                              re.IGNORECASE | re.DOTALL)
+    self.token_re = re.compile(r'(^[-_A-Z0-9]+$)', re.IGNORECASE)
     if naming_file and naming_type:
       filename = os.path.sep.join([naming_dir, naming_file])
-      file_handle = open(filename, 'r')
-      self._ParseFile(file_handle, naming_type)
+      with open(filename, 'r') as file_handle:
+        self._ParseFile(file_handle, naming_type)
     elif naming_dir:
       self._Parse(naming_dir, 'services')
       self._CheckUnseen('services')
@@ -169,7 +173,7 @@ class Naming(object):
     recursive_parents = []
     # convert string to nacaddr, if arg is ipaddr then convert str() to nacaddr
     if (not isinstance(query, nacaddr.IPv4) and
-        not isinstance(query, nacaddr.IPv6)):
+       not isinstance(query, nacaddr.IPv6)):
       if query[:1].isdigit():
         query = nacaddr.IP(query)
     # Get parent token for an IP
@@ -259,6 +263,57 @@ class Naming(object):
       if bp not in recursive_parents:
         recursive_parents.append(bp)
     return recursive_parents
+
+  def GetNetChildren(self, query):
+    """Given a query token, return list of network definitions tokens within provided token.
+
+    This will only return children, not descendants of provided token.
+
+    Args:
+      query: a network token name.
+
+    Returns:
+      A list of network definitions tokens within this token.
+    """
+    return self._GetChildren(query, self.networks)
+
+  def _GetChildren(self, query, query_group):
+    """Given a naming item dict, return tokens (not IPs) contained within this value.
+
+    Args:
+      query: a token name
+      query_group: networks dict
+
+    Returns:
+      Returns a list of definitions tokens within (children) target token.
+    """
+
+    children = []
+    if query in query_group:
+      for item in query_group[query].items:
+        child = item.split('#')[0].strip()
+
+        # Determine if item a token, then it's a child
+        if not self._IsIpFormat(child):
+          children.append(child)
+
+    return children
+
+  def _IsIpFormat(self, item):
+    """Helper function for _GetChildren to detect if string is IP format.
+
+    Args:
+      item: string either a IP or token.
+    Returns:
+      True if string is a IP
+      False if string is not a IP
+    """
+    try:
+      item = item.strip()
+      nacaddr.IP(item, strict=False)
+      return True
+    except ValueError:
+      return False
 
   def GetServiceNames(self):
     """Returns the list of all known service names."""
@@ -430,17 +485,21 @@ class Naming(object):
         (net, comment) = i.split('#', 1)
       else:
         net = i
-      try:
-        net = net.strip()
-        # TODO(robankeny): Fix using error to continue processing.
-        addr = nacaddr.IP(net, strict=False)
-        addr.text = comment.lstrip()
-        addr.token = token
-        returnlist.append(addr)
-      except ValueError:
-        # if net was something like 'FOO', or the name of another token which
-        # needs to be dereferenced, nacaddr.IP() will return a ValueError
+
+      net = net.strip()
+      if self.token_re.match(net):
         returnlist.extend(self.GetNet(net))
+      else:
+        try:
+          # TODO(robankeny): Fix using error to continue processing.
+          addr = nacaddr.IP(net, strict=False)
+          addr.text = comment.lstrip()
+          addr.token = token
+          returnlist.append(addr)
+        except ValueError:
+          # if net was something like 'FOO', or the name of another token which
+          # needs to be dereferenced, nacaddr.IP() will return a ValueError
+          returnlist.extend(self.GetNet(net))
     for i in returnlist:
       i.parent_token = token
     return returnlist
@@ -473,10 +532,10 @@ class Naming(object):
 
     for current_file in file_names:
       try:
-        file_handle = open(current_file, 'r')
-        self._ParseFile(file_handle, def_type)
+        with open(current_file, 'r') as file_handle:
+          self._ParseFile(file_handle, def_type)
       except IOError as error_info:
-        raise NoDefinitionsError('%s', error_info)
+        raise NoDefinitionsError('%s' % error_info)
 
   def _ParseFile(self, file_handle, def_type):
     for line in file_handle:
@@ -519,13 +578,13 @@ class Naming(object):
       definition_type: Either 'networks' or 'services'
 
     Raises:
-      UnexpectedDefinitionType: called with unexpected type of definitions.
+      UnexpectedDefinitionTypeError: called with unexpected type of definitions.
       NamespaceCollisionError: when overlapping tokens are found.
       ParseError: If errors occur
       NamingSyntaxError: Syntax error parsing config.
     """
     if definition_type not in ['services', 'networks']:
-      raise UnexpectedDefinitionType('%s %s' % (
+      raise UnexpectedDefinitionTypeError('%s %s' % (
           'Received an unexpected definition type:', definition_type))
     line = line.strip()
     if not line or line.startswith('#'):  # Skip comments and blanks.
@@ -537,7 +596,10 @@ class Naming(object):
     # the value field still has the comment at this point
     # If there was '=', then do var and value
     if len(line_parts) > 1:
-      self.current_symbol = line_parts[0].strip()  # varname left of '='
+      current_symbol = line_parts[0].strip()  # varname left of '='
+      if not self.token_re.match(current_symbol):
+        logging.info('\nService name does not match recommended criteria: %s\nOnly A-Z, a-z, 0-9, -, and _ allowed' % current_symbol)
+      self.current_symbol = current_symbol
       if definition_type == 'services':
         for port in line_parts[1].strip().split():
           if not self.port_re.match(port):

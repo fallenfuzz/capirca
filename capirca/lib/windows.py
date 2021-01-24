@@ -20,11 +20,11 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 import datetime
-from string import Template
+import string
 
+from absl import logging
 from capirca.lib import aclgenerator
 from capirca.lib import nacaddr
-from absl import logging
 
 
 CMD_PREFIX = 'netsh ipsec static add '
@@ -35,7 +35,7 @@ class Term(aclgenerator.Term):
 
   _PLATFORM = 'windows'
 
-  _COMMENT_FORMAT = Template(': $comment')
+  _COMMENT_FORMAT = string.Template(': $comment')
 
   # filter rules
   _ACTION_TABLE = {}
@@ -164,7 +164,7 @@ class Term(aclgenerator.Term):
     Returns:
       A pair of lists of (icmp_types, protocols)
     """
-    pass
+    return None, None
 
   def _HandlePorts(self, src_ports, dst_ports):
     """Perform implementation-specific port transforms.
@@ -180,7 +180,7 @@ class Term(aclgenerator.Term):
     Returns:
       A pair of lists of (icmp_types, protocols)
     """
-    pass
+    return None, None
 
   def _HandlePreRule(self, ret_str):
     """Perform any pre-cartesian product transforms on the ret_str array.
@@ -266,7 +266,7 @@ class WindowsGenerator(aclgenerator.ACLGenerator):
       # ensure all options after the filter name are expected
       for opt in filter_options:
         if opt not in good_default_actions + self._GOOD_AFS + good_options:
-          raise aclgenerator.UnsupportedTargetOption('%s %s %s %s' % (
+          raise aclgenerator.UnsupportedTargetOptionError('%s %s %s %s' % (
               '\nUnsupported option found in', self._PLATFORM,
               'target definition:', opt))
 
@@ -290,7 +290,7 @@ class WindowsGenerator(aclgenerator.ACLGenerator):
               if arg in good_default_actions:
                 default_action = arg
       if default_action and default_action not in good_default_actions:
-        raise aclgenerator.UnsupportedDefaultAction('%s %s %s %s %s' % (
+        raise aclgenerator.UnsupportedTargetOptionError('%s %s %s %s %s' % (
             '\nOnly', ', '.join(good_default_actions),
             'default filter action allowed;', default_action, 'used.'))
 
@@ -308,8 +308,8 @@ class WindowsGenerator(aclgenerator.ACLGenerator):
             logging.info('INFO: Term %s in policy %s expires '
                          'in less than two weeks.', term.name, filter_name)
           if term.expiration <= current_date:
-            logging.warn('WARNING: Term %s in policy %s is expired and '
-                         'will not be rendered.', term.name, filter_name)
+            logging.warning('WARNING: Term %s in policy %s is expired and '
+                            'will not be rendered.', term.name, filter_name)
             continue
         if 'established' in term.option or 'tcp-established' in term.option:
           continue
@@ -326,8 +326,7 @@ class WindowsGenerator(aclgenerator.ACLGenerator):
     if self._RENDER_PREFIX:
       target.append(self._RENDER_PREFIX)
 
-    for (header, filter_name, filter_type, default_action, terms
-        ) in self.windows_policies:
+    for header, _, filter_type, default_action, terms in self.windows_policies:
       # Add comments for this filter
       target.append(': %s %s Policy' % (pretty_platform,
                                         header.FilterName(self._PLATFORM)))
@@ -345,8 +344,9 @@ class WindowsGenerator(aclgenerator.ACLGenerator):
       target.append(': ' + filter_type)
 
       if default_action:
-        target.append(self._DEFAULTACTION_FORMAT % (filter_name,
-                                                    default_action))
+        raise aclgenerator.UnsupportedTargetOptionError(
+            'Windows generator does not support default actions')
+
       # add the terms
       for term in terms:
         term_str = str(term)

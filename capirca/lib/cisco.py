@@ -21,13 +21,14 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 import datetime
+import ipaddress
+from typing import cast, Union
 
+from absl import logging
 from capirca.lib import aclgenerator
 from capirca.lib import nacaddr
 from capirca.lib import summarizer
-import ipaddress
 from six.moves import range
-from absl import logging
 
 
 _ACTION_TABLE = {
@@ -38,6 +39,8 @@ _ACTION_TABLE = {
     'reject-with-tcp-rst': 'deny',  # tcp rst not supported
 }
 
+_COMMENT_MAX_WIDTH = 70
+
 
 # generic error class
 class Error(Exception):
@@ -46,6 +49,10 @@ class Error(Exception):
 
 class CiscoDuplicateTermError(Error):
   """Raised on duplicate term names."""
+
+
+class CiscoNextIpError(Error):
+  """Raised when next-ip is misconfigured."""
 
 
 class UnsupportedCiscoAccessListError(Error):
@@ -62,7 +69,6 @@ class ExtendedACLTermError(Error):
 
 class TermStandard(object):
   """A single standard ACL Term."""
-  COMMENT_MAX_WIDTH = 70
 
   def __init__(self, term, filter_name, platform='cisco', verbose=True):
     self.term = term
@@ -92,16 +98,16 @@ class TermStandard(object):
       raise StandardAclTermError(
           'Standard ACLs prohibit use of port numbers')
     if self.term.logging:
-      logging.warn(
+      logging.warning(
           'WARNING: Standard ACL logging is set in filter %s, term %s and '
           'may not implemented on all IOS versions', self.filter_name,
           self.term.name)
       self.logstring = ' log'
     if self.term.dscp_match:
-      logging.warn(
+      logging.warning(
           'WARNING: dscp-match is set in filter %s, term %s and may not be '
-          'implemented on all IOS version', self.filter_name, self.term_name)
-      self.dscpstring = ' dscp' + self.term_dscp_match
+          'implemented on all IOS version', self.filter_name, self.term.name)
+      self.dscpstring = ' dscp' + self.term.dscp_match
 
   def __str__(self):
     # Verify platform specific terms. Skip whole term if platform does not
@@ -129,10 +135,8 @@ class TermStandard(object):
       if self.verbose:
         ret_str.append('access-list %s remark %s' % (self.filter_name,
                                                      self.term.name))
-
         comments = aclgenerator.WrapWords(self.term.comment,
-                                          self.COMMENT_MAX_WIDTH)
-
+                                          _COMMENT_MAX_WIDTH)
         for comment in comments:
           ret_str.append('access-list %s remark %s' % (self.filter_name,
                                                        comment))
@@ -164,7 +168,7 @@ class TermStandard(object):
       if self.verbose:
         ret_str.append(' remark ' + self.term.name)
         comments = aclgenerator.WrapWords(self.term.comment,
-                                          self.COMMENT_MAX_WIDTH)
+                                          _COMMENT_MAX_WIDTH)
         if comments and comments[0]:
           for comment in comments:
             ret_str.append(' remark ' + str(comment))
@@ -282,165 +286,6 @@ class ObjectGroup(object):
 
     return '\n'.join(ret_str)
 
-class PortMap(object):
-    """Map port numbers to service names"""
-    # Define port mappings common to all protocols
-    _PORTS_TCP = {
-        179: 'bgp',
-        19: 'chargen',
-        514: 'cmd',
-        13: 'daytime',
-        9: 'discard',
-        53: 'domain',
-        7: 'echo',
-        512: 'exec',
-        79: 'finger',
-        21: 'ftp',
-        20: 'ftp-data',
-        70: 'gopher',
-        443: 'https',
-        113: 'ident',
-        194: 'irc',
-        543: 'klogin',
-        544: 'kshell',
-        389: 'ldap',
-        636: 'ldaps',
-        513: 'login',
-        515: 'lpd',
-        2049: 'nfs',
-        119: 'nntp',
-        496: 'pim-auto-rp',
-        109: 'pop2',
-        110: 'pop3',
-        1723: 'pptp',
-        25: 'smtp',
-        22: 'ssh',
-        111: 'sunrpc',
-        49: 'tacacs',
-        517: 'talk',
-        23: 'telnet',
-        540: 'uucp',
-        43: 'whois',
-        80: 'www',
-    }
-    _PORTS_UDP = {
-        512: 'biff',
-        68: 'bootpc',
-        67: 'bootps',
-        9: 'discard',
-        195: 'dnsix',
-        53: 'domain',
-        7: 'echo',
-        500: 'isakmp',
-        434: 'mobile-ip',
-        42: 'nameserver',
-        138: 'netbios-dgm',
-        137: 'netbios-ns',
-        2049: 'nfs',
-        123: 'ntp',
-        496: 'pim-auto-rp',
-        520: 'rip',
-        161: 'snmp',
-        162: 'snmptrap',
-        111: 'sunrpc',
-        514: 'syslog',
-        49: 'tacacs',
-        517: 'talk',
-        69: 'tftp',
-        37: 'time',
-        513: 'who',
-        177: 'xdmcp',
-    }
-    _TYPES_ICMP = {
-        6: 'alternate-address',
-        31: 'conversion-error',
-        8: 'echo',
-        0: 'echo-reply',
-        16: 'information-reply',
-        15: 'information-request',
-        18: 'mask-reply',
-        17: 'mask-request',
-        32: 'mobile-redirect',
-        12: 'parameter-problem',
-        5: 'redirect',
-        9: 'router-advertisement',
-        10: 'router-solicitation',
-        4: 'source-quench',
-        11: 'time-exceeded',
-        14: 'timestamp-reply',
-        13: 'timestamp-request',
-        30: 'traceroute',
-        3: 'unreachable',
-    }
-
-    # Combine cisco-specific port mappings with common ones
-    _CISCO_PORTS_TCP = {
-        5190: 'aol',
-        1494: 'citrix-ica',
-        2748: 'ctiqbe',
-        1720: 'h323',
-        101: 'hostname',
-        143: 'imap4',
-        750: 'kerberos',
-        1352: 'lotusnotes',
-        139: 'netbios-ssn',
-        5631: 'pcanywhere-data',
-        1521: 'sqlnet',
-    }
-    _CISCO_PORTS_TCP.update(_PORTS_TCP)
-    _CISCO_PORTS_UDP = {
-        750: 'kerberos',
-        5632: 'pcanywhere-status',
-        1645: 'radius',
-        1646: 'radius-acct',
-        5510: 'secureid-udp',
-    }
-    _CISCO_PORTS_UDP.update(_PORTS_UDP)
-
-    # Combine arista-specific port mappings with common ones
-    _ARISTA_PORTS_TCP = {
-        143: 'imap',
-        88: 'kerberos',
-    }
-    _ARISTA_PORTS_TCP.update(_PORTS_TCP)
-    _ARISTA_PORTS_UDP = {
-        88: 'kerberos',
-        1812: 'radius',
-        1813: 'radius-acct',
-    }
-    _ARISTA_PORTS_UDP.update(_PORTS_UDP)
-
-    # Full port map data structure
-    _PORT_MAP = {
-      'cisco' : {
-        'tcp' : _CISCO_PORTS_TCP,
-        'udp' : _CISCO_PORTS_UDP,
-        'icmp': _TYPES_ICMP
-      },
-      'arista' : {
-        'tcp' : _ARISTA_PORTS_TCP,
-        'udp' : _ARISTA_PORTS_UDP,
-        'icmp': _TYPES_ICMP
-      }
-    }
-
-    @staticmethod
-    def getProtocol(port_num, proto, platform='cisco'):
-      """Converts a port number to a name or returns the number.
-
-      Args:
-        port_num: integer representing the port number.
-        proto: string representing proto (tcp, udp, etc).
-        platform: string representing platform (cisco, arista)
-
-      Returns:
-        A name of the protocol or the port number that was provided.
-      """
-      try:
-        port_map = PortMap._PORT_MAP[platform][proto]
-        return port_map[port_num]
-      except KeyError:
-        return port_num
 
 class PortMap(object):
   """Map port numbers to service names."""
@@ -602,13 +447,14 @@ class PortMap(object):
     except KeyError:
       return port_num
 
-
 class Term(aclgenerator.Term):
   """A single ACL Term."""
   ALLOWED_PROTO_STRINGS = ['eigrp', 'gre', 'icmp', 'igmp', 'igrp', 'ip',
                            'ipinip', 'nos', 'pim', 'tcp', 'udp',
                            'sctp', 'ahp']
-  COMMENT_MAX_WIDTH = 70
+
+  IPV4_ADDRESS = Union[nacaddr.IPv4, ipaddress.IPv4Network]
+  IPV6_ADDRESS = Union[nacaddr.IPv6, ipaddress.IPv6Network]
 
   def __init__(self, term, af=4, proto_int=True, enable_dsmo=False,
                term_remark=True, platform='cisco', verbose=True):
@@ -735,9 +581,32 @@ class Term(aclgenerator.Term):
         and ('tcp-established' in opts or 'established' in opts)):
       if 'established' not in self.options:
         self.options.append('established')
-    if ('ip' in protocol) and ('fragments' in opts):
+    # Using both 'fragments' and 'is-fragment', ref Github Issue #187
+    if ('ip' in protocol) and (('fragments' in opts) or
+      ('is-fragment' in opts)):
       if 'fragments' not in self.options:
         self.options.append('fragments')
+    # ACL-based Forwarding
+    if (self.platform == 'ciscoxr'
+       ) and not self.term.action and self.term.next_ip and (
+           'nexthop1' not in opts):
+      if len(self.term.next_ip) > 1:
+        raise CiscoNextIpError('The following term has more than one next IP '
+                               'value: %s' % self.term.name)
+      if (not isinstance(self.term.next_ip[0], nacaddr.IPv4) and
+          not isinstance(self.term.next_ip[0], nacaddr.IPv6)):
+        raise CiscoNextIpError('Next IP value must be an IP address. '
+                               'Invalid term: %s' % self.term.name)
+      if self.term.next_ip[0].num_addresses > 1:
+        raise CiscoNextIpError('The following term has a subnet instead of a '
+                               'host: %s' % self.term.name)
+      nexthop = self.term.next_ip[0].network_address
+      nexthop_protocol = 'ipv4' if nexthop.version == 4 else 'ipv6'
+      self.options.append('nexthop1 %s %s' % (nexthop_protocol, nexthop))
+      action = _ACTION_TABLE.get('accept')
+
+    if self.term.action:
+      action = _ACTION_TABLE.get(str(self.term.action[0]))
 
     # ports
     source_port = [()]
@@ -781,16 +650,11 @@ class Term(aclgenerator.Term):
               opts = fixed_opts[proto]
               for icmp_type in icmp_types:
                 for icmp_code in icmp_codes:
-                  ret_str.extend(self._TermletToStr(
-                      _ACTION_TABLE.get(str(self.term.action[0])),
-                      proto,
-                      saddr,
-                      self._FormatPort(sport, proto),
-                      daddr,
-                      self._FormatPort(dport, proto),
-                      icmp_type,
-                      icmp_code,
-                      opts))
+                  ret_str.extend(
+                      self._TermletToStr(action, proto, saddr,
+                                         self._FormatPort(sport, proto), daddr,
+                                         self._FormatPort(dport, proto),
+                                         icmp_type, icmp_code, opts))
 
     return '\n'.join(ret_str)
 
@@ -804,6 +668,7 @@ class Term(aclgenerator.Term):
     """
     if isinstance(addr, nacaddr.IPv4) or isinstance(addr,
                                                     ipaddress.IPv4Network):
+      addr = cast(self.IPV4_ADDRESS, addr)
       if addr.num_addresses > 1:
         if self.platform == 'arista':
           return addr.with_prefixlen
@@ -811,6 +676,7 @@ class Term(aclgenerator.Term):
       return 'host %s' % (addr.network_address)
     if isinstance(addr, nacaddr.IPv6) or isinstance(addr,
                                                     ipaddress.IPv6Network):
+      addr = cast(self.IPV6_ADDRESS, addr)
       if addr.num_addresses > 1:
         return addr.with_prefixlen
       return 'host %s' % (addr.network_address)
@@ -950,9 +816,8 @@ class ObjectGroupTerm(Term):
     ret_str = ['\n']
     if self.verbose:
       ret_str.append(' remark %s' % self.term.name)
-
       comments = aclgenerator.WrapWords(self.term.comment,
-                                        self.COMMENT_MAX_WIDTH)
+                                        _COMMENT_MAX_WIDTH)
       if comments and comments[0]:
         for comment in comments:
           ret_str.append(' remark %s' % str(comment))
@@ -961,7 +826,7 @@ class ObjectGroupTerm(Term):
     # code by returning early.  Warnings provided in policy.py.
     if self.term.verbatim:
       for next_verbatim in self.term.verbatim:
-        if next_verbatim[0] == self._PLATFORM:
+        if next_verbatim[0] == self.platform:
           ret_str.append(str(next_verbatim[1]))
         return '\n'.join(ret_str)
 
@@ -1049,6 +914,7 @@ class Cisco(aclgenerator.ACLGenerator):
 
     supported_sub_tokens.update({'option': {'established',
                                             'tcp-established',
+                                            'is-fragment',
                                             'fragments'},
                                  # Warning, some of these are mapped
                                  # differently. See _ACTION_TABLE
@@ -1130,8 +996,8 @@ class Cisco(aclgenerator.ACLGenerator):
               logging.info('INFO: Term %s in policy %s expires '
                            'in less than two weeks.', term.name, filter_name)
             if term.expiration <= current_date:
-              logging.warn('WARNING: Term %s in policy %s is expired and '
-                           'will not be rendered.', term.name, filter_name)
+              logging.warning('WARNING: Term %s in policy %s is expired and '
+                              'will not be rendered.', term.name, filter_name)
               continue
 
           # render terms based on filter type
@@ -1228,7 +1094,9 @@ class Cisco(aclgenerator.ACLGenerator):
                 ' remark ', date=False, revision=False))
 
           # add a header comment if one exists
-          for comment in header.comment:
+
+          for comment in aclgenerator.WrapWords(header.comment,
+                                                _COMMENT_MAX_WIDTH):
             for line in comment.split('\n'):
               if (self._PLATFORM == 'cisco' and filter_type == 'standard' and
                   filter_name.isdigit()):

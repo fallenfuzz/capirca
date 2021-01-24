@@ -22,15 +22,13 @@ from __future__ import unicode_literals
 import datetime
 import unittest
 
-
+from absl import logging
 from capirca.lib import aclgenerator
 from capirca.lib import nacaddr
 from capirca.lib import nftables
 from capirca.lib import policy
 
 import mock
-
-from absl import logging
 
 
 BAD_HEADER = """
@@ -299,6 +297,7 @@ EXP_INFO = 2
 class NftablesTest(unittest.TestCase):
 
   def setUp(self):
+    super(NftablesTest, self).setUp()
     self.mock_naming = mock.MagicMock()
 
   def testBadHeader(self):
@@ -328,7 +327,7 @@ class NftablesTest(unittest.TestCase):
       logging.info('Testing bad address family case %s.', case)
       header = BAD_HEADER % case
       pol = policy.ParsePolicy(header + GOOD_TERM_1, self.mock_naming)
-      self.assertRaises(aclgenerator.UnsupportedAF,
+      self.assertRaises(aclgenerator.UnsupportedAFError,
                         nftables.Nftables.__init__,
                         nftables.Nftables.__new__(nftables.Nftables),
                         pol, EXP_INFO)
@@ -349,7 +348,7 @@ class NftablesTest(unittest.TestCase):
         'table ip6 table_filter {\n\tchain chain_name {\n\t\ttype filter '
         'hook input priority 0;\n\t\tdrop\n\t}\n}', nft)
 
-  @mock.patch.object(logging, 'warn')
+  @mock.patch.object(logging, 'warning')
   def testExpired(self, mock_logging_warn):
     nftables.Nftables(policy.ParsePolicy(GOOD_HEADER_1 + EXPIRED_TERM,
                                          self.mock_naming), EXP_INFO)
@@ -462,7 +461,7 @@ class NftablesTest(unittest.TestCase):
     self.assertIn('comment "comment first line comment second line '
                   'Owner: owner@enterprise.com"', nft)
 
-  @mock.patch.object(logging, 'warn')
+  @mock.patch.object(logging, 'warning')
   def testCommentTruncate(self, mock_logging_warn):
     nft = str(nftables.Nftables(policy.ParsePolicy(GOOD_HEADER_1 + GOOD_TERM_17,
                                                    self.mock_naming), EXP_INFO))
@@ -470,7 +469,7 @@ class NftablesTest(unittest.TestCase):
         'Term %s in policy is too long (>%d characters) and will be'
         ' truncated', 'good-term-17', nftables.Term.MAX_CHARACTERS)
     # Ensure that the truncate did happen and stripped off the ':'
-    self.assertIn('comment "%(long_line)s' % {'long_line': 'A' *127}, nft)
+    self.assertIn('comment "%(long_line)s' % {'long_line': 'A' * 127}, nft)
 
   def testLogTerm(self):
     nft = str(nftables.Nftables(policy.ParsePolicy(GOOD_HEADER_1 + GOOD_TERM_13,
@@ -548,15 +547,15 @@ class NftablesTest(unittest.TestCase):
     pol1 = nftables.Nftables(policy.ParsePolicy(GOOD_HEADER_1 + GOOD_TERM_1,
                                                 self.mock_naming), EXP_INFO)
     st, sst = pol1._BuildTokens()
-    self.assertEquals(st, SUPPORTED_TOKENS)
-    self.assertEquals(sst, SUPPORTED_SUB_TOKENS)
+    self.assertEqual(st, SUPPORTED_TOKENS)
+    self.assertEqual(sst, SUPPORTED_SUB_TOKENS)
 
   def testBuildWarningTokens(self):
     pol1 = nftables.Nftables(policy.ParsePolicy(GOOD_HEADER_1 + GOOD_TERM_12,
                                                 self.mock_naming), EXP_INFO)
     st, sst = pol1._BuildTokens()
-    self.assertEquals(st, SUPPORTED_TOKENS)
-    self.assertEquals(sst, SUPPORTED_SUB_TOKENS)
+    self.assertEqual(st, SUPPORTED_TOKENS)
+    self.assertEqual(sst, SUPPORTED_SUB_TOKENS)
 
 
 if __name__ == '__main__':

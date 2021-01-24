@@ -21,13 +21,14 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 import datetime
+import ipaddress
 import logging
 import re
+from typing import cast
 
 from capirca.lib import aclgenerator
 from capirca.lib import cisco
 from capirca.lib import nacaddr
-import ipaddress
 
 
 _ACTION_TABLE = {
@@ -223,12 +224,14 @@ class Term(cisco.Term):
     # inet4
     if isinstance(saddr, nacaddr.IPv4) or isinstance(saddr,
                                                      ipaddress.IPv4Network):
+      saddr = cast(self.IPV4_ADDRESS, saddr)
       if saddr.num_addresses > 1:
         saddr = '%s %s' % (saddr.network_address, saddr.netmask)
       else:
         saddr = 'host %s' % (saddr.network_address)
     if isinstance(daddr, nacaddr.IPv4) or isinstance(daddr,
                                                      ipaddress.IPv4Network):
+      daddr = cast(self.IPV4_ADDRESS, daddr)
       if daddr.num_addresses > 1:
         daddr = '%s %s' % (daddr.network_address, daddr.netmask)
       else:
@@ -236,12 +239,14 @@ class Term(cisco.Term):
     # inet6
     if isinstance(saddr, nacaddr.IPv6) or isinstance(saddr,
                                                      ipaddress.IPv6Network):
+      saddr = cast(self.IPV6_ADDRESS, saddr)
       if saddr.num_addresses > 1:
         saddr = '%s/%s' % (saddr.network_address, saddr.prefixlen)
       else:
         saddr = 'host %s' % (saddr.network_address)
     if isinstance(daddr, nacaddr.IPv6) or isinstance(daddr,
                                                      ipaddress.IPv6Network):
+      daddr = cast(self.IPV6_ADDRESS, daddr)
       if daddr.num_addresses > 1:
         daddr = '%s/%s' % (daddr.network_address, daddr.prefixlen)
       else:
@@ -330,8 +335,8 @@ class CiscoASA(aclgenerator.ACLGenerator):
             logging.info('INFO: Term %s in policy %s expires '
                          'in less than two weeks.', term.name, filter_name)
           if term.expiration <= current_date:
-            logging.warn('WARNING: Term %s in policy %s is expired and '
-                         'will not be rendered.', term.name, filter_name)
+            logging.warning('WARNING: Term %s in policy %s is expired and '
+                            'will not be rendered.', term.name, filter_name)
             continue
 
         new_terms.append(str(Term(term, filter_name)))
@@ -359,5 +364,5 @@ class CiscoASA(aclgenerator.ACLGenerator):
         target.append(str(term))
 
       # end for header, filter_name, filter_type...
-      return '\n'.join(target)
 
+    return '\n'.join(target)

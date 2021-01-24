@@ -23,7 +23,7 @@ from __future__ import unicode_literals
 import copy
 import logging
 import re
-from string import Template
+import string
 
 from capirca.lib import policy
 import six
@@ -39,10 +39,6 @@ class NoPlatformPolicyError(Error):
   """Raised when a policy is received that doesn't support this platform."""
 
 
-class UnsupportedFilter(Error):
-  """Raised when we see an inappropriate filter."""
-
-
 class UnknownIcmpTypeError(Error):
   """Raised when we see an unknown icmp-type."""
 
@@ -55,7 +51,7 @@ class EstablishedError(Error):
   """Raised when a term has established option with inappropriate protocol."""
 
 
-class UnsupportedAF(Error):
+class UnsupportedAFError(Error):
   """Raised when provided an unsupported address family."""
 
 
@@ -67,7 +63,7 @@ class UnsupportedFilterError(Error):
   """Raised when we see an inappropriate filter."""
 
 
-class UnsupportedTargetOption(Error):
+class UnsupportedTargetOptionError(Error):
   """Raised when a filter has an impermissible default action specified."""
 
 
@@ -119,14 +115,14 @@ class Term(object):
   PROTO_MAP_BY_NUMBER = dict([(v, k) for (k, v) in six.iteritems(PROTO_MAP)])
   AF_MAP_BY_NUMBER = dict([(v, k) for (k, v) in six.iteritems(AF_MAP)])
 
-  NO_AF_LOG_ADDR = Template('Term $term will not be rendered, as it has'
-                            ' $direction address match specified but no'
-                            ' $direction addresses of $af address family'
-                            ' are present.')
+  NO_AF_LOG_ADDR = string.Template('Term $term will not be rendered, as it has'
+                                   ' $direction address match specified but no'
+                                   ' $direction addresses of $af address family'
+                                   ' are present.')
 
-  NO_AF_LOG_PROTO = Template('Term $term will not be rendered, as it has'
-                             ' $proto match specified but the ACL is of $af'
-                             ' address family.')
+  NO_AF_LOG_PROTO = string.Template('Term $term will not be rendered, as it has'
+                                    ' $proto match specified but the ACL is of'
+                                    ' $af address family.')
 
   def __init__(self, term):
     if term.protocol:
@@ -139,6 +135,7 @@ class Term(object):
       term.protocol = ProtocolNameToNumber(term.protocol,
                                            self.ALWAYS_PROTO_NUM,
                                            self.PROTO_MAP)
+    self.term = term
 
   def NormalizeAddressFamily(self, af):
     """Convert (if necessary) address family name to numeric value.
@@ -150,7 +147,7 @@ class Term(object):
       af: Numeric address family value
 
     Raises:
-      UnsupportedAF: Address family not in keys or values of our AF_MAP.
+      UnsupportedAFError: Address family not in keys or values of our AF_MAP.
     """
     # ensure address family (af) is valid
     if af in self.AF_MAP_BY_NUMBER:
@@ -159,8 +156,8 @@ class Term(object):
       # convert AF name to number (e.g. 'inet' becomes 4, 'inet6' becomes 6)
       af = self.AF_MAP[af]
     else:
-      raise UnsupportedAF('Address family %s is not supported, term %s.' % (
-          af, self.term.name))
+      raise UnsupportedAFError('Address family %s is not supported, '
+                               'term %s.' % (af, self.term.name))
     return af
 
   def NormalizeIcmpTypes(self, icmp_types, protocols, af):
@@ -379,7 +376,8 @@ class ACLGenerator(object):
             'reject',
             'reject-with-tcp-rst',
         },
-        'icmp_type': set(list(Term.ICMP_TYPE[4].keys()) + list(Term.ICMP_TYPE[6].keys()))
+        'icmp_type': set(list(Term.ICMP_TYPE[4].keys())
+                         + list(Term.ICMP_TYPE[6].keys()))
     }
     return supported_tokens, supported_sub_tokens
 
@@ -415,9 +413,10 @@ class ACLGenerator(object):
       Copy of term that has been fixed
 
     Raises:
-      UnsupportedAF: Address family provided but unsupported.
+      UnsupportedAFError: Address family provided but unsupported.
       UnsupportedFilter: Protocols do not match the address family.
       EstablishedError: Established option used with inappropriate protocol.
+      UnsupportedFilterError: Filter does not support protocols with AF.
     """
     mod = term
 
@@ -429,15 +428,18 @@ class ACLGenerator(object):
 
     # Check that the address family matches the protocols.
     if af not in self._SUPPORTED_AF:
-      raise UnsupportedAF('\nAddress family %s, found in %s, '
-                          'unsupported by %s' % (af, term.name, self._PLATFORM))
+      raise UnsupportedAFError(
+          '\nAddress family %s, found in %s, unsupported '
+          'by %s' % (af, term.name, self._PLATFORM))
     if af in self._FILTER_BLACKLIST:
       unsupported_protocols = self._FILTER_BLACKLIST[af].intersection(protocols)
       if unsupported_protocols:
-        raise UnsupportedFilter('\n%s targets do not support protocol(s) %s '
-                                'with address family %s (in %s)' %
-                                (self._PLATFORM, unsupported_protocols,
-                                 af, term.name))
+        raise UnsupportedFilterError(
+            '\n%s targets do not support protocol(s) %s '
+            'with address family %s (in %s)' % (self._PLATFORM,
+                                                unsupported_protocols,
+                                                af,
+                                                term.name))
 
     # Many renders expect high ports for terms with the established option.
     for opt in [str(x) for x in term.option]:
@@ -554,11 +556,12 @@ def WrapWords(textlist, size, joiner='\n'):
   Returns:
     list of strings
   """
-  # \S*? is a non greedy match to collect words of len > size
-  # .{1,%d} collects words and spaces up to size in length.
-  # (?:\s|\Z) ensures that we break on spaces or at end of string.
+  # \S{%d}(?!\s|\Z) collets the max size for words that are larger than the max
+  # (?<=\S{%d})\S+ collects the remaining text for overflow words in their own line
+  # \S.{1,%d}(?=\s|\Z)) collects all words and spaces up to max size, breaking at
+  #                     the last space
   rval = []
-  linelength_re = re.compile(r'(\S*?.{1,%d}(?:\s|\Z))' % size)
+  linelength_re = re.compile(r'(\S{%d}(?!\s|\Z)|(?<=\S{%d})\S+|\S.{1,%d}(?=\s|\Z))' % (size, size, size-1))
   for index in range(len(textlist)):
     if len(textlist[index]) > size:
       # insert joiner into the string at appropriate places.

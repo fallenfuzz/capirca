@@ -21,13 +21,12 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 import datetime
-
+from absl import logging
 from capirca.lib import aclgenerator
 from capirca.lib import nacaddr
 from capirca.lib import summarizer
 import six
 from six.moves import range
-from absl import logging
 
 
 # generic error class
@@ -115,6 +114,12 @@ class Config(object):
         raise JuniperIndentationError('Too many close braces.')
     spaces = ' ' * self.indent
     self.lines.append(spaces + line.strip())
+    if not line.find('/*') >= 0 and line.find('*/') >= 0:
+      self.indent -= 1
+      if self.indent < self._initial_indent:
+        raise JuniperIndentationError('Too many close comments.')
+    if not line.find('*/') >= 0 and line.find('/*') >= 0:
+      self.indent += 1
     if line.endswith(' {'):
       self.indent += self.tabstop
 
@@ -123,11 +128,11 @@ class Term(aclgenerator.Term):
   """Representation of an individual Juniper term.
 
     This is mostly useful for the __str__() method.
-
-  Args:
-    term: policy.Term object
-    term_type: the address family for the term, one of "inet", "inet6",
-      or "bridge"
+  Attributes:
+    term: The term object from policy.
+    term_type: String indicating type of term, inet, inet6 icmp etc.
+    enable_dsmo: Boolean to enable dsmo.
+    noverbose: Boolean to disable verbosity.
   """
   _PLATFORM = 'juniper'
   _DEFAULT_INDENT = 12
@@ -135,7 +140,8 @@ class Term(aclgenerator.Term):
              'deny': 'discard',
              'reject': 'reject',
              'next': 'next term',
-             'reject-with-tcp-rst': 'reject tcp-reset'}
+             'reject-with-tcp-rst': 'reject tcp-reset',
+             'encapsulate': 'encapsulate'}
 
   # the following lookup table is used to map between the various types of
   # filters the juniper generator can render.  As new differences are
@@ -269,8 +275,14 @@ class Term(aclgenerator.Term):
         else:
           from_str.append('%s;' % opt)
 
+    # if the term is inactive we have to set the prefix
+    if self.term.inactive:
+      term_prefix = 'inactive:'
+    else:
+      term_prefix = ''
+
     # term name
-    config.Append('term %s {' % self.term.name)
+    config.Append('%s term %s {' %(term_prefix, self.term.name))
 
     # a default action term doesn't have any from { clause
     has_match_criteria = (self.term.address or
@@ -280,6 +292,7 @@ class Term(aclgenerator.Term):
                           self.term.destination_port or
                           self.term.destination_prefix or
                           self.term.destination_prefix_except or
+                          self.term.encapsulate or
                           self.term.ether_type or
                           self.term.flexible_match_range or
                           self.term.forwarding_class or
@@ -533,9 +546,12 @@ class Term(aclgenerator.Term):
     #     accept;
     # }"
     #
+    self.CheckTerminatingAction()
     unique_actions = set(self.extra_actions)
     if not self.term.routing_instance:
       unique_actions.update(self.term.action)
+    if self.term.encapsulate:
+      unique_actions.add('encapsulate')
     if len(unique_actions) <= 1:
       for action in [self.term.logging, self.term.routing_instance,
                      self.term.counter, self.term.policer, self.term.qos,
@@ -574,6 +590,10 @@ class Term(aclgenerator.Term):
         else:
           config.Append('next-ip6 %s;' % str(self.term.next_ip[0]))
         config.Append('}')
+      elif current_action == 'encapsulate':
+        config.Append('then {')
+        config.Append('encapsulate %s;' % str(self.term.encapsulate))
+        config.Append('}')
       else:
         config.Append('then %s;' % current_action)
     elif len(unique_actions) > 1:
@@ -599,10 +619,10 @@ class Term(aclgenerator.Term):
       if self.term.policer:
         config.Append('policer %s;' % self.term.policer)
         if len(self.term.policer) > oid_length:
-          logging.warn('WARNING: %s is longer than %d bytes. Due to limitation'
-                       ' in JUNOS, OIDs longer than %dB can cause SNMP '
-                       'timeout issues.',
-                       self.term.policer, oid_length, oid_length)
+          logging.warning('WARNING: %s is longer than %d bytes. Due to '
+                          'limitation in JUNOS, OIDs longer than %dB can '
+                          'cause SNMP timeout issues.',
+                          self.term.policer, oid_length, oid_length)
 
       if self.term.qos:
         config.Append('forwarding-class %s;' % self.term.qos)
@@ -615,6 +635,8 @@ class Term(aclgenerator.Term):
           config.Append('next-ip %s;' % str(self.term.next_ip[0]))
         else:
           config.Append('next-ip6 %s;' % str(self.term.next_ip[0]))
+      if self.term.encapsulate:
+        config.Append('encapsulate %s;' % str(self.term.encapsulate))
       for action in self.extra_actions:
         config.Append(action + ';')
 
@@ -644,6 +666,17 @@ class Term(aclgenerator.Term):
     if next_ip[0].num_addresses > 1:
       raise JuniperNextIpError('The following term has a subnet '
                                'instead of a host: %s' % term_name)
+
+  def CheckTerminatingAction(self):
+    action = set(self.term.action)
+    if self.term.encapsulate:
+      action.add(self.term.encapsulate)
+    if self.term.routing_instance:
+      action.add(self.term.routing_instance)
+    if len(action) > 1:
+      raise JuniperMultipleTerminatingActionError(
+          'The following term has multiple terminating actions: %s' %
+          self.term.name)
 
   def _MinimizePrefixes(self, include, exclude):
     """Calculate a minimal set of prefixes for Juniper match conditions.
@@ -680,6 +713,39 @@ class Term(aclgenerator.Term):
     return include_result, exclude_result
 
   def _Comment(self, addr, exclude=False, line_length=132):
+    """Returns address comment field if it exists.
+
+    Args:
+      addr: nacaddr.IPv4 object (?)
+      exclude: bool - address excludes have different indentations
+      line_length: integer - this is the length to which a comment will be
+        truncated, no matter what.  ie, a 1000 character comment will be
+        truncated to line_length, and then split.  if 0, the whole comment
+        is kept. the current default of 132 is somewhat arbitrary.
+
+    Returns:
+      List of strings.
+
+    Notes:
+      This method tries to intelligently split long comments up.  if we've
+      managed to summarize 4 /32's into a /30, each with a nacaddr text field
+      of something like 'foobar N', normal concatination would make the
+      resulting rendered comment look in mondrian like
+
+                         source-address {
+                             ...
+                             1.1.1.0/30; /* foobar1, foobar2, foobar3, foo
+      bar4 */
+
+      b/c of the line splitting at 80 chars.  this method will split the
+      comments at word breaks and make the previous example look like
+
+                         source-address {
+                              ....
+                              1.1.1.0/30; /* foobar1, foobar2, foobar3,
+                                          ** foobar4 */
+      much cleaner.
+    """
     rval = []
     if self.noverbose:
       return rval
@@ -788,7 +854,7 @@ class Juniper(aclgenerator.ACLGenerator):
     This class takes a policy object and renders the output into a syntax
     which is understood by juniper routers.
 
-  Args:
+  Attributes:
     pol: policy.Policy object
   """
 
@@ -813,6 +879,7 @@ class Juniper(aclgenerator.ACLGenerator):
                          'dscp_except',
                          'dscp_match',
                          'dscp_set',
+                         'encapsulate',
                          'ether_type',
                          'flexible_match_range',
                          'forwarding_class',
@@ -845,7 +912,8 @@ class Juniper(aclgenerator.ACLGenerator):
             '.*',  # make ArbitraryOptions work, yolo.
             'sample',
             'tcp-established',
-            'tcp-initial'}
+            'tcp-initial',
+            'inactive'}
         })
     return supported_tokens, supported_sub_tokens
 
@@ -880,7 +948,14 @@ class Juniper(aclgenerator.ACLGenerator):
       term_names = set()
       new_terms = []
       for term in terms:
+
+        # if inactive is set, deactivate the term and remove the option.
+        if 'inactive' in term.option:
+          term.inactive = True
+          term.option.remove('inactive')
+
         term.name = self.FixTermLength(term.name)
+
         if term.name in term_names:
           raise JuniperDuplicateTermError('You have multiple terms named: %s' %
                                           term.name)
@@ -895,8 +970,8 @@ class Juniper(aclgenerator.ACLGenerator):
             logging.info('INFO: Term %s in policy %s expires '
                          'in less than two weeks.', term.name, filter_name)
           if term.expiration <= current_date:
-            logging.warn('WARNING: Term %s in policy %s is expired and '
-                         'will not be rendered.', term.name, filter_name)
+            logging.warning('WARNING: Term %s in policy %s is expired and '
+                            'will not be rendered.', term.name, filter_name)
             continue
         if 'is-fragment' in term.option and filter_type == 'inet6':
           raise JuniperFragmentInV6Error('The term %s uses "is-fragment" but '

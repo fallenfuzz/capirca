@@ -66,6 +66,7 @@ term term-5 {
 class AclCheckTest(unittest.TestCase):
 
   def setUp(self):
+    super(AclCheckTest, self).setUp()
     self.defs = naming.Naming(None)
     servicedata = []
     servicedata.append('SSH = 22/tcp')
@@ -104,7 +105,7 @@ class AclCheckTest(unittest.TestCase):
     self.assertEqual(matches[0].possibles, [])  # term-1
     self.assertEqual(matches[1].possibles,
                      ['first-frag', 'frag-offset', 'packet-length', 'tcp-est']
-                    )                           # term-2
+                     )                           # term-2
     self.assertEqual(matches[2].possibles, [])  # term-3
 
     # Check which term names match
@@ -112,8 +113,8 @@ class AclCheckTest(unittest.TestCase):
     self.assertEqual(matches[1].term, 'term-2')
     self.assertEqual(matches[2].term, 'term-3')
     # term-4 should never match
-    self.failIf('term-4' in str(matches))
-    self.failIf('term-5' in str(matches))
+    self.assertNotIn('term-4', str(matches))
+    self.assertNotIn('term-5', str(matches))
 
   def testExceptions(self):
     srcip = '172.16.1.1'
@@ -131,7 +132,7 @@ class AclCheckTest(unittest.TestCase):
                       bad_portvalue,
                       dport,
                       proto,
-                     )
+                      )
     self.assertRaises(port.BadPortRange,
                       aclcheck.AclCheck,
                       self.pol,
@@ -140,7 +141,7 @@ class AclCheckTest(unittest.TestCase):
                       sport,
                       bad_portrange,
                       proto,
-                     )
+                      )
     self.assertRaises(aclcheck.AddressError,
                       aclcheck.AclCheck,
                       self.pol,
@@ -149,7 +150,7 @@ class AclCheckTest(unittest.TestCase):
                       sport,
                       dport,
                       proto,
-                     )
+                      )
 
 
 if __name__ == '__main__':

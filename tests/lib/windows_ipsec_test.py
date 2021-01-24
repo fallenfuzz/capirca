@@ -21,7 +21,6 @@ from __future__ import unicode_literals
 import datetime
 import unittest
 
-
 from capirca.lib import nacaddr
 from capirca.lib import naming
 from capirca.lib import policy
@@ -125,14 +124,15 @@ EXP_INFO = 2
 class WindowsIPSecTest(unittest.TestCase):
 
   def setUp(self):
+    super(WindowsIPSecTest, self).setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   # pylint: disable=invalid-name
-  def failUnless(self, strings, result, term):
+  def assertTrue(self, strings, result, term):
     for string in strings:
       fullstring = 'netsh ipsec static add %s' % (string)
-      super(WindowsIPSecTest, self).failUnless(
-          fullstring in result,
+      super(WindowsIPSecTest, self).assertIn(
+          fullstring, result,
           'did not find "%s" for %s' % (fullstring, term))
 
   def testPolicy(self):
@@ -142,7 +142,7 @@ class WindowsIPSecTest(unittest.TestCase):
     acl = windows_ipsec.WindowsIPSec(policy.ParsePolicy(
         GOOD_HEADER + GOOD_TERM_TCP, self.naming), EXP_INFO)
     result = str(acl)
-    self.failUnless(
+    self.assertTrue(
         ['policy name=test-filter-policy assign=yes'],
         result,
         'header')
@@ -157,7 +157,7 @@ class WindowsIPSecTest(unittest.TestCase):
     acl = windows_ipsec.WindowsIPSec(policy.ParsePolicy(
         GOOD_HEADER + GOOD_TERM_TCP, self.naming), EXP_INFO)
     result = str(acl)
-    self.failUnless(
+    self.assertTrue(
         ['filteraction name=t_good-term-tcp-action action=permit',
          'filter filterlist=t_good-term-tcp-list mirrored=yes srcaddr=any '
          ' dstaddr=10.0.0.0 dstmask=8 dstport=25',
@@ -174,7 +174,7 @@ class WindowsIPSecTest(unittest.TestCase):
     acl = windows_ipsec.WindowsIPSec(policy.ParsePolicy(
         GOOD_HEADER + GOOD_TERM_ICMP, self.naming), EXP_INFO)
     result = str(acl)
-    self.failUnless(
+    self.assertTrue(
         ['filterlist name=t_good-term-icmp-list',
          'filteraction name=t_good-term-icmp-action action=permit',
          'filter filterlist=t_good-term-icmp-list mirrored=yes srcaddr=any '
@@ -185,7 +185,7 @@ class WindowsIPSecTest(unittest.TestCase):
         result,
         'good-term-icmp')
 
-  @mock.patch.object(windows_ipsec.logging, 'warn')
+  @mock.patch.object(windows_ipsec.logging, 'warning')
   def testExpiredTerm(self, mock_warn):
     windows_ipsec.WindowsIPSec(policy.ParsePolicy(
         GOOD_HEADER + EXPIRED_TERM, self.naming), EXP_INFO)
@@ -211,7 +211,7 @@ class WindowsIPSecTest(unittest.TestCase):
     acl = windows_ipsec.WindowsIPSec(policy.ParsePolicy(
         GOOD_HEADER + MULTIPLE_PROTOCOLS_TERM, self.naming), EXP_INFO)
     result = str(acl)
-    self.failUnless(
+    self.assertTrue(
         ['filterlist name=t_multi-proto-list',
          'filteraction name=t_multi-proto-action action=permit',
          'filter filterlist=t_multi-proto-list mirrored=yes srcaddr=any '
@@ -229,15 +229,15 @@ class WindowsIPSecTest(unittest.TestCase):
     pol1 = windows_ipsec.WindowsIPSec(policy.ParsePolicy(
         GOOD_HEADER + GOOD_SIMPLE, self.naming), EXP_INFO)
     st, sst = pol1._BuildTokens()
-    self.assertEquals(st, SUPPORTED_TOKENS)
-    self.assertEquals(sst, SUPPORTED_SUB_TOKENS)
+    self.assertEqual(st, SUPPORTED_TOKENS)
+    self.assertEqual(sst, SUPPORTED_SUB_TOKENS)
 
   def testBuildWarningTokens(self):
     pol1 = windows_ipsec.WindowsIPSec(policy.ParsePolicy(
         GOOD_HEADER + GOOD_SIMPLE_WARNING, self.naming), EXP_INFO)
     st, sst = pol1._BuildTokens()
-    self.assertEquals(st, SUPPORTED_TOKENS)
-    self.assertEquals(sst, SUPPORTED_SUB_TOKENS)
+    self.assertEqual(st, SUPPORTED_TOKENS)
+    self.assertEqual(sst, SUPPORTED_SUB_TOKENS)
 
 
 if __name__ == '__main__':

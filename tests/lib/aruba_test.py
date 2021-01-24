@@ -24,7 +24,6 @@ import logging
 import textwrap
 import unittest
 
-
 from capirca.lib import aruba
 from capirca.lib import nacaddr
 from capirca.lib import naming
@@ -245,6 +244,7 @@ EXP_INFO = 2
 class ArubaTest(unittest.TestCase):
 
   def setUp(self):
+    super(ArubaTest, self).setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   def testBuildTokens(self):
@@ -255,7 +255,7 @@ class ArubaTest(unittest.TestCase):
     self.assertEqual(SUPPORTED_TOKENS, st)
     self.assertEqual(SUPPORTED_SUB_TOKENS, sst)
 
-  @mock.patch.object(logging, 'warn')
+  @mock.patch.object(logging, 'warning')
   def testExpiredTerm(self, mock_warn):
     aruba.Aruba(policy.ParsePolicy(GOOD_HEADER_V4 + EXPIRED_TERM,
                                    self.naming), EXP_INFO)
